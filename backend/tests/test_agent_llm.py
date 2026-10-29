@@ -146,3 +146,56 @@ async def test_rate_limit_reports_retry_after():
     with pytest.raises(LLMError) as exc:
         await _collect(_client(rec))
     assert (exc.value.retryable, exc.value.retry_after_s) == (True, 15.8)
+
+
+async def test_seed_is_sent_only_when_set():
+    rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
+    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1", seed=42,
+                        transport=httpx.MockTransport(rec))  # fmt: skip
+    _ = [e async for e in client.stream([], [])]
+    assert json.loads(rec.requests[0].content)["seed"] == 42
+    _ = await _collect(_client(rec))
+    assert "seed" not in json.loads(rec.requests[1].content)
+
+
+async def test_rate_limiter_is_consulted_before_each_request():
+    class Limiter:
+        def __init__(self):
+            self.asked: list[int] = []
+
+        async def acquire(self, tokens: int) -> None:
+            self.asked.append(tokens)
+
+    limiter = Limiter()
+    rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
+    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1",
+                        max_completion_tokens=400, rate_limiter=limiter,
+                        transport=httpx.MockTransport(rec))  # fmt: skip
+    _ = await _collect(client)
+    assert len(limiter.asked) == 1 and limiter.asked[0] > 400  # prompt estimate + completion
+
+
+async def test_prompt_estimate_learns_from_reported_usage():
+    class Limiter:
+        def __init__(self):
+            self.asked, self.settled = [], []
+
+        async def acquire(self, tokens):
+            self.asked.append(tokens)
+            return [0, tokens]
+
+        def settle(self, booking, tokens):
+            self.settled.append(tokens)
+
+    usage = {"prompt_tokens": 1, "completion_tokens": 2}
+    body = _sse(_delta(content="ok"), {"choices": [], "usage": usage})
+    limiter = Limiter()
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=body))
+    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1",
+                        max_completion_tokens=10, rate_limiter=limiter,
+                        transport=transport)  # fmt: skip
+    messages = [{"role": "user", "content": "x" * 4000}]
+    for _ in range(3):
+        _ = [e async for e in client.stream(messages, [])]
+    assert limiter.settled == [3, 3, 3]  # bookings corrected to the real usage
+    assert limiter.asked[0] > limiter.asked[1] > limiter.asked[2]  # estimate shrinks to fit

@@ -1,0 +1,4 @@
+# Harness output (python -m harness run). Kept out of git by default; commit a
+# baseline report deliberately if you want one.
+*
+!.gitignore

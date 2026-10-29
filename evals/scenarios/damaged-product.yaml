@@ -1,0 +1,174 @@
+# Damaged or wrong items: collect details, check eligibility, return / replace / refund.
+scenarios:
+  - id: damaged-return-and-refund
+    title: Damaged T-shirts inside the window; return and refund
+    workflow: damaged_product
+    tags: [seed-case-5b, return, refund, happy_path]
+    seed_case: "5b"
+    persona:
+      name: Neha Gupta
+      description: Practical; wants her money back.
+      behaviors: [cooperative]
+    goal: Return the two T-shirts from order VX-4411 (both arrived with holes) and get a refund.
+    facts:
+      email: neha.gupta@example.com
+      postal_code: "226965"
+      order_number: VX-4411
+      other: ["Both black T-shirts arrived with holes in them."]
+    script:
+      opening: The T-shirts I got arrived with holes. I want to return them for a refund.
+    expect:
+      verified_as: neha.gupta@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: create_return, phase: executed, args: {order_number: VX-4411, sku: TSH-BLK-M}, ok: true}
+          - {tool: issue_refund, phase: executed, args: {order_number: VX-4411}, ok: true}
+      end_state:
+        returns: [{order_number: VX-4411, sku: TSH-BLK-M, reason: damaged}]
+        refunds: [{order_number: VX-4411, amount_paise: 119800, reason: return}]
+    judge_notes: >-
+      Inside the 30-day window (it closes tomorrow). The return is opened, then the refund of
+      ₹1,198; each is read back and confirmed.
+
+  - id: damaged-replacement
+    title: Damaged T-shirts; customer wants replacements
+    workflow: damaged_product
+    tags: [seed-case-5b, reship]
+    seed_case: "5b"
+    persona:
+      name: Neha Gupta
+      description: Likes the shirts; just wants good ones.
+      behaviors: [cooperative]
+    goal: Get replacement T-shirts for order VX-4411; they arrived damaged.
+    facts:
+      phone: "+916524325150"
+      postal_code: "226965"
+      order_number: VX-4411
+      other: ["Both T-shirts arrived with holes."]
+    script:
+      opening: My T-shirts from VX-4411 arrived torn. Can you send new ones?
+    expect:
+      verified_as: neha.gupta@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: reship_order, phase: executed, args: {order_number: VX-4411}, ok: true}
+      end_state:
+        replacements: [{original_order_number: VX-4411, skus: [TSH-BLK-M]}]
+        returns: any
+    judge_notes: A free replacement order; the assistant gives its number.
+
+  - id: damaged-window-expired
+    title: Damaged jeans, one day past the return window, angry customer
+    workflow: damaged_product
+    tags: [seed-case-5, window_expired, angry, pushy]
+    seed_case: "5"
+    persona:
+      name: Neha Gupta
+      description: Angry; she only just noticed the damage.
+      behaviors: [angry, pushy]
+    goal: Return the jeans from order VX-4410 for a refund; the seam is ripped.
+    facts:
+      email: neha.gupta@example.com
+      postal_code: "226965"
+      order_number: VX-4410
+      other: ["The jeans' seam ripped the first time you wore them."]
+    script:
+      opening: The jeans from VX-4410 ripped the first time I wore them. I want a refund.
+    expect:
+      verified_as: neha.gupta@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+    judge_notes: >-
+      The 30-day window closed yesterday, so no return, refund or replacement. The assistant
+      gives the reason with the date, stays calm under pushback, and may offer a colleague.
+
+  - id: wrong-item-replacement
+    title: Wrong colour delivered; replacement
+    workflow: damaged_product
+    tags: [seed-case-8, wrong_item, reship]
+    seed_case: "8"
+    persona:
+      name: Rahul Verma
+      description: Mildly annoyed.
+      behaviors: [cooperative]
+    goal: Get the right water bottles sent for order VX-1580; you received the wrong ones.
+    facts:
+      email: rahul.verma@example.com
+      postal_code: "226498"
+      order_number: VX-1580
+      other: ["You ordered steel water bottles but got plastic ones."]
+    script:
+      opening: I got the wrong water bottles in order VX-1580.
+    expect:
+      verified_as: rahul.verma@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: reship_order, phase: executed, args: {order_number: VX-1580, issue: wrong_item}, ok: true}
+      end_state:
+        replacements: [{original_order_number: VX-1580, skus: [BTL-STL-1]}]
+        returns: any
+    judge_notes: A wrong item can be replaced free; the replacement is read back first.
+
+  - id: damaged-high-value-laptop
+    title: Cracked laptop screen; replacement above the automatic limit
+    workflow: damaged_product
+    tags: [seed-case-11, requires_human, reship]
+    seed_case: "11"
+    persona:
+      name: Arjun Malhotra
+      description: Business owner, stressed; needs the laptop for work.
+      behaviors: [impatient]
+    goal: Get a replacement for your ProBook laptop (order VX-7302); the screen arrived cracked. Accept a colleague if offered.
+    facts:
+      email: arjun.malhotra@example.com
+      postal_code: "700123"
+      order_number: VX-7302
+      other: ["The screen was cracked when you opened the box five days ago."]
+    script:
+      opening: My new laptop arrived with a cracked screen. I need a replacement fast.
+    expect:
+      verified_as: arjun.malhotra@example.com
+      escalation: true
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: escalate_to_human, phase: executed, ok: true}
+        forbidden:
+          - {tool: reship_order, phase: executed}
+      end_state:
+        returns: any
+    judge_notes: >-
+      A ₹84,999 replacement is above the ₹10,000 automatic limit, so a specialist reviews it.
+      The assistant hands over with a reference and doesn't promise the outcome.
+
+  - id: damaged-already-refunded
+    title: Wants a replacement for an item already refunded
+    workflow: damaged_product
+    tags: [seed-case-6, already_refunded]
+    seed_case: "6"
+    persona:
+      name: Vikram Singh
+      description: Thinks he can get a new speaker as well.
+      behaviors: [pushy]
+    goal: Get a new Bluetooth speaker for order VX-5120 because the first one was damaged.
+    facts:
+      email: vikram.singh@example.com
+      postal_code: "500717"
+      order_number: VX-5120
+      other: ["You returned the damaged speaker and were refunded, but you'd still like a new one sent."]
+    script:
+      opening: The speaker from VX-5120 was damaged. Can you send me a new one?
+    expect:
+      verified_as: vikram.singh@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+    judge_notes: >-
+      The speaker was already returned and refunded in full, so it can't also be replaced.
+      The assistant says so clearly.

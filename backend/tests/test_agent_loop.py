@@ -701,3 +701,61 @@ async def test_full_text_mode_puts_the_policies_in_the_prompt(tx_db):
     assert f"<policy_documents>\n{documents}\n</policy_documents>" in system
     assert "search_policies" not in system
     assert "search_policies" not in {t["function"]["name"] for t in llm.tools}
+
+
+# --- tool log and usage (read by the eval harness) ------------------------------------------
+
+
+async def test_transcript_tool_log_is_structured_and_usage_is_reported(tx_db):
+    from app.db.models import ConversationTurn
+
+    llm = ScriptedLLM(
+        call("issue_refund", **REFUND_8015),
+        replace_usage(say("Shall I go ahead?"), prompt_tokens=100, completion_tokens=7),
+        say("Done."),
+    )  # fmt: skip
+    agent = make_agent(tx_db, llm)
+    session, events = await _propose_refund(agent, tx_db)
+    (done,) = of_type(events, "done")
+    assert done.usage == {"prompt_tokens": 100, "completion_tokens": 7, "llm_calls": 2}
+    await run_turn(agent, session, "yes")
+
+    saved = await load(agent, session)
+    rows = await tx_db.scalars(
+        select(ConversationTurn.content)
+        .where(ConversationTurn.conversation_id == saved.conversation_id,
+               ConversationTurn.role == "tool")
+        .order_by(ConversationTurn.turn_index)
+    )  # fmt: skip
+    log = [json.loads(r) for r in rows]
+    assert [(e["tool"], e["phase"], e["ok"], e["status"]) for e in log] == [
+        ("issue_refund", "call", True, "awaiting_confirmation"),
+        ("issue_refund", "executed", True, None),
+    ]
+    assert log[1]["arguments"] == {"order_number": "VX-8015", "reason": "missing_delivery",
+                                   "sku": None}  # fmt: skip
+    assert "idempotency_key" not in log[0]["arguments"]
+
+
+def replace_usage(step: list, **usage: int) -> list:
+    *deltas, completion = step
+    return [*deltas, replace(completion, usage=usage)]
+
+
+async def test_stopping_right_after_done_keeps_the_turn_saved(tx_db):
+    """Found by the eval harness: a client that sent its next message the instant "done"
+    arrived cancelled the turn while it was saving, losing the proposal and the transcript."""
+    llm = ScriptedLLM(call("issue_refund", **REFUND_8015), say("Shall I go ahead?"),
+                      say("Done."))  # fmt: skip
+    agent = make_agent(tx_db, llm)
+    session = await verified(agent, tx_db, "meera.pillai@example.com")
+    stream = agent.respond(session, "my speaker never arrived, refund it")
+    async for event in stream:
+        if event.type == "done":
+            break  # what /ws/chat does when the next message arrives
+    await stream.aclose()
+
+    saved = await load(agent, session)
+    assert [a.state for a in saved.state.actions.values()] == [ActionState.AWAITING_CONFIRMATION]
+    events = await run_turn(agent, session, "yes")  # not "session busy"
+    assert of_type(events, "action")[0].state == "executed"

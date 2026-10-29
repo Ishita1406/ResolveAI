@@ -43,14 +43,21 @@ async def chat(ws: WebSocket) -> None:
     await ws.send_json({"type": "session", "session_id": session_id})
 
     current: asyncio.Task | None = None
+    replied = False  # the current reply has sent "done": nothing left to interrupt
 
     async def reply(text: str) -> None:
+        nonlocal replied
+        replied = False
         async for event in agent.respond(session_id, text):
             await ws.send_json(event.model_dump(mode="json"))
+            replied = replied or event.type == "done"
 
     async def stop_current() -> bool:
         nonlocal current
         if current is None or current.done():
+            return False
+        if replied:
+            await current  # finishing up after "done"; not an interruption
             return False
         current.cancel()
         with suppress(asyncio.CancelledError):

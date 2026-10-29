@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TokenEvent(BaseModel):
@@ -43,6 +43,8 @@ class DoneEvent(BaseModel):
     reply: str
     outcome: Literal["completed", "escalated", "failed"]
     iterations: int
+    # This turn's model usage: prompt_tokens, completion_tokens, llm_calls (for cost reports).
+    usage: dict[str, int] = Field(default_factory=dict)
 
 
 AgentEvent = TokenEvent | ToolEvent | ActionEvent | EscalationEvent | ErrorEvent | DoneEvent

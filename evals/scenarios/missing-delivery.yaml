@@ -1,0 +1,199 @@
+# Missing delivery: carrier events and policy windows decide; one remedy per parcel.
+scenarios:
+  - id: missing-refund
+    title: Overdue parcel, customer wants a refund
+    workflow: missing_delivery
+    tags: [seed-case-12, refund, happy_path]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Polite but tired of waiting.
+      behaviors: [cooperative]
+    goal: Get a refund for the Bluetooth speaker (order VX-8015) that never arrived.
+    facts:
+      email: meera.pillai@example.com
+      postal_code: "302647"
+      order_number: VX-8015
+    script:
+      opening: Hi, my speaker order never arrived and I'd like a refund.
+    expect:
+      verified_as: meera.pillai@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: issue_refund, phase: executed, args: {order_number: VX-8015}, ok: true}
+      end_state:
+        refunds: [{order_number: VX-8015, amount_paise: 349900, reason: missing_delivery}]
+    judge_notes: >-
+      The parcel is overdue and counts as missing. The assistant reads back a refund of ₹3,499
+      before doing it, then says it's done, with the reference and 5 to 7 business days.
+
+  - id: missing-replacement
+    title: Overdue parcel, customer wants a replacement
+    workflow: missing_delivery
+    tags: [seed-case-12, reship, happy_path]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Still wants the speaker; a refund is no use to her.
+      behaviors: [cooperative]
+    goal: Get a free replacement for the Bluetooth speaker (order VX-8015) that never arrived.
+    facts:
+      phone: "+917973188087"
+      postal_code: "302647"
+      order_number: VX-8015
+    script:
+      opening: My order VX-8015 is way late. Can you send me another one?
+    expect:
+      verified_as: meera.pillai@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: reship_order, phase: executed, args: {order_number: VX-8015}, ok: true}
+      end_state:
+        replacements: [{original_order_number: VX-8015, skus: [SPK-BT-10]}]
+    judge_notes: A free replacement is sent as a new order; the assistant gives its order number.
+
+  - id: missing-changes-mind
+    title: Asks for a refund, then switches to a replacement before confirming
+    workflow: missing_delivery
+    tags: [seed-case-12, changes_mind]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Indecisive.
+      behaviors: [changes_mind]
+    goal: In the end, get a replacement speaker for order VX-8015.
+    facts:
+      email: meera.pillai@example.com
+      postal_code: "302647"
+      order_number: VX-8015
+    script:
+      opening: My speaker never came, can I get my money back?
+      notes:
+        - "Ask for a refund first. When the assistant asks you to confirm the refund, say: no wait, actually I'd rather have a replacement."
+        - "Then confirm the replacement."
+    expect:
+      verified_as: meera.pillai@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: issue_refund, phase: call}
+          - {tool: reship_order, phase: executed, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+      end_state:
+        replacements: [{original_order_number: VX-8015}]
+    judge_notes: The refund is dropped without fuss and the replacement is read back before it's sent.
+
+  - id: missing-carrier-says-delivered
+    title: Carrier marked it delivered; an open case already exists
+    workflow: missing_delivery
+    tags: [seed-case-4, delivered_per_carrier, requires_human]
+    seed_case: "4"
+    persona:
+      name: Sameer Khan
+      description: Frustrated; he's called before about this.
+      behaviors: [angry]
+    goal: Get your missing earbuds (order VX-3107) sorted; you never received them.
+    facts:
+      email: sameer.khan@example.com
+      postal_code: "302893"
+      order_number: VX-3107
+      other: ["The tracking says delivered at your front door two days ago, but nothing was there."]
+    script:
+      opening: Your tracking says my earbuds were delivered. They were NOT.
+    expect:
+      verified_as: sameer.khan@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+          - {tool: reship_order, phase: executed}
+      end_state:
+        tickets: []
+    judge_notes: >-
+      Because the carrier recorded a delivery, a specialist has to investigate; there's already
+      an open case for this. The assistant shouldn't promise a refund or replacement, and should
+      acknowledge the frustration.
+
+  - id: missing-not-yet-late
+    title: Parcel is due tomorrow; customer demands a refund now
+    workflow: missing_delivery
+    tags: [not_overdue, pushy]
+    persona:
+      name: Priya Sharma
+      description: Wants things done now.
+      behaviors: [impatient, pushy]
+    goal: Get a refund for your smartwatch order VX-1350 because it hasn't come yet.
+    facts:
+      email: priya.sharma@example.com
+      postal_code: "560105"
+      order_number: VX-1350
+    script:
+      opening: My smartwatch VX-1350 still isn't here, just refund it.
+    expect:
+      verified_as: priya.sharma@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+    judge_notes: >-
+      It's in transit and expected tomorrow, so it isn't missing yet (it counts as missing 3
+      days after the expected date). The assistant explains this calmly.
+
+  - id: missing-wants-both
+    title: Angry customer wants a refund and a replacement
+    workflow: missing_delivery
+    tags: [seed-case-12, angry, one_remedy]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Furious after waiting more than a week.
+      behaviors: [angry, pushy]
+    goal: Get both your money back and a new speaker for order VX-8015. Accept one if firmly told you can't have both.
+    facts:
+      email: meera.pillai@example.com
+      postal_code: "302647"
+      order_number: VX-8015
+    script:
+      opening: This is ridiculous. VX-8015 is lost. I want a refund AND a new speaker.
+      notes: ["If told you can only have one, push back once, then choose the refund."]
+    expect:
+      verified_as: meera.pillai@example.com
+      escalation: any
+      end_state:
+        refunds: {max: 1, match: {order_number: VX-8015}}
+        replacements: {max: 1, match: {original_order_number: VX-8015}}
+    judge_notes: Only one remedy per missing parcel; the assistant says so without arguing.
+
+  - id: missing-vague-no-order-number
+    title: Missing parcel, customer doesn't know the order number
+    workflow: missing_delivery
+    tags: [seed-case-12, vague, refund]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Not good with numbers; describes things instead.
+      behaviors: [vague, confused]
+    goal: Get your money back for the Bluetooth speaker that never arrived.
+    facts:
+      email: meera.pillai@example.com
+      postal_code: "302647"
+      other: ["You don't know the order number. You ordered a Bluetooth speaker a while ago."]
+    script:
+      opening: my speaker never came
+    expect:
+      verified_as: meera.pillai@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: [list_recent_orders, find_order_candidates], ok: true}
+          - {tool: issue_refund, phase: executed, args: {order_number: VX-8015}, ok: true}
+      end_state:
+        refunds: [{order_number: VX-8015, amount_paise: 349900}]
+    judge_notes: The assistant finds the order from the description and reads the number back.

@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.3",
+    "websockets>=17.3",
 ]
 
 [tool.ruff]
@@ -37,6 +38,8 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# ../evals: the eval harness package, tested from tests/test_eval_*.py.
+pythonpath = [".", "../evals"]
 addopts = "-ra"
 markers = [
     "db: needs the PostgreSQL test database (deselect with -m 'not db')",

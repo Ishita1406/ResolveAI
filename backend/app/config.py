@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     llm_request_timeout_s: float = 20.0
     llm_max_completion_tokens: int = 400
     llm_reasoning_effort: str | None = "low"
+    # Best-effort reproducibility; the provider may still vary. None sends no seed.
+    llm_seed: int | None = None
+    # Client-side tokens-per-minute budget (Groq free tier: 8000). None means no limiter.
+    llm_tokens_per_minute: int | None = None
 
     # Agent loop
     agent_prompt_version: str = "v3"

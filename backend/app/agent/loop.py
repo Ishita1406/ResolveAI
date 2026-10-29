@@ -90,13 +90,18 @@ class _Turn:
     notices: list[str] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)  # model/tool exchange
     spoken: list[str] = field(default_factory=list)
+    # JSON lines for the transcript: every tool call with its arguments and result.
     tool_log: list[str] = field(default_factory=list)
+    usage: dict[str, int] = field(
+        default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0}
+    )
     protected: list[asyncio.Task] = field(default_factory=list)
     iterations: int = 0
     completed: bool = False
     interrupted: bool = False
     deadline: float = 0.0  # event-loop time by which the turn must finish
     held: bool = False  # "One moment, please." already said this turn
+    done: DoneEvent | None = None  # sent only after the turn is saved
     redone: bool = False  # a cut-off reply was already asked for again this turn
 
 
@@ -166,11 +171,15 @@ class Agent:
         task = asyncio.create_task(self._run_turn(session_id, text, queue.put_nowait))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
+        finished = False
         try:
             while (event := await queue.get()) is not _END:
+                finished = finished or event.type == "done"
                 yield event
         finally:
-            if not task.done():
+            # Barge-in cancels a reply in progress. After "done" there is nothing left to
+            # interrupt, so a consumer that stops early must not cancel the turn's cleanup.
+            if not task.done() and not finished:
                 task.cancel()
             # The turn finishes its own cleanup even if this consumer is cancelled again.
             await asyncio.wait({task})
@@ -254,6 +263,9 @@ class Agent:
                 session.updated_at = self.clock()
                 await self._record(db, session, turn, text)
                 await self.store.save(session)
+                if turn.done is not None:
+                    # "done" means the turn is saved: the client may send the next message.
+                    emit(turn.done)
 
     async def _turn(
         self, session: AgentSession, ctx: ToolContext, turn: _Turn, text: str, emit: Callable
@@ -298,10 +310,11 @@ class Agent:
                 continue
             if not completion.tool_calls:
                 turn.completed = True
-                emit(
-                    DoneEvent(
-                        reply=self._spoken(turn), outcome="completed", iterations=turn.iterations
-                    )
+                turn.done = DoneEvent(
+                    reply=self._spoken(turn),
+                    outcome="completed",
+                    iterations=turn.iterations,
+                    usage=turn.usage,
                 )
                 return
             for call in completion.tool_calls:
@@ -321,6 +334,14 @@ class Agent:
                     return
                 result = await self._protected(turn, gate.execute(ctx, pending.id))
                 emit(self._action_event(ctx, pending.id))
+                self._log_tool(
+                    turn,
+                    pending.tool,
+                    ctx.state.actions[pending.id].arguments,
+                    ok=result.ok,
+                    payload={"error": _error(result.error)} if result.error else {},
+                    phase="executed",
+                )
                 if result.ok and result.tool_result is not None:
                     turn.notices.append(
                         self.prompts.notice(
@@ -340,6 +361,14 @@ class Agent:
             case Reply.NO:
                 gate.cancel(ctx, pending.id)
                 emit(self._action_event(ctx, pending.id))
+                self._log_tool(
+                    turn,
+                    pending.tool,
+                    ctx.state.actions[pending.id].arguments,
+                    ok=True,
+                    payload={},
+                    phase="cancelled",
+                )
                 turn.notices.append(
                     self.prompts.notice("cancelled_by_customer", summary=pending.summary)
                 )
@@ -360,7 +389,13 @@ class Agent:
         while True:
             spoke = [False]
             try:
-                return await self._stream_once(messages, tools, turn, emit, spoke)
+                completion, wrote_for_customer = await self._stream_once(
+                    messages, tools, turn, emit, spoke
+                )
+                turn.usage["llm_calls"] += 1
+                for key in ("prompt_tokens", "completion_tokens"):
+                    turn.usage[key] += int(completion.usage.get(key) or 0)
+                return completion, wrote_for_customer
             except LLMError as exc:
                 wait = self._retry_wait(exc, attempt, turn, spoke[0])
                 if wait is None:
@@ -483,7 +518,7 @@ class Agent:
                     "hint": f"There is no tool named {call.name!r}.",
                 }
             }
-        turn.tool_log.append(f"{call.name}: {'ok' if ok else 'failed'}")
+        self._log_tool(turn, call.name, args, ok=ok, payload=payload, phase="call")
         emit(ToolEvent(name=call.name, status="finished", ok=ok))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -517,6 +552,14 @@ class Agent:
                 reference = result.tool_result.data["ticket_reference"]
         except Exception:
             log.exception("system escalation failed")
+        self._log_tool(
+            turn,
+            "escalate_to_human",
+            {"reason": reason, "what_happened": what_happened, "reference": reference},
+            ok=reference is not None,
+            payload={},
+            phase="system",
+        )
         if reference:
             session.escalation_reference = reference
             emit(EscalationEvent(reference=reference, reason=reason))
@@ -527,15 +570,38 @@ class Agent:
             self._say(turn, emit, " ")
         for word in text.split(" "):
             self._say(turn, emit, word + " ")
-        emit(
-            DoneEvent(
-                reply=self._spoken(turn),
-                outcome="escalated" if reference else "failed",
-                iterations=turn.iterations,
-            )
+        turn.done = DoneEvent(
+            reply=self._spoken(turn),
+            outcome="escalated" if reference else "failed",
+            iterations=turn.iterations,
+            usage=turn.usage,
         )
 
     # --- helpers --------------------------------------------------------------------------
+
+    @staticmethod
+    def _log_tool(
+        turn: _Turn,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        ok: bool,
+        payload: dict[str, Any],
+        phase: str,
+    ) -> None:
+        """phase: "call" (the model called it; a write tool only proposes), "executed" or
+        "cancelled" (the customer's yes or no to a proposal), or "system" (a handoff the
+        loop made itself)."""
+        error = payload.get("error") or {}
+        entry = {
+            "tool": tool,
+            "phase": phase,
+            "arguments": {k: v for k, v in arguments.items() if k != "idempotency_key"},
+            "ok": ok,
+            "status": payload.get("status"),
+            "error": error.get("code") if isinstance(error, dict) else None,
+        }
+        turn.tool_log.append(json.dumps(entry, ensure_ascii=False, default=str))
 
     def _say(self, turn: _Turn, emit: Callable, text: str) -> None:
         turn.spoken.append(text)

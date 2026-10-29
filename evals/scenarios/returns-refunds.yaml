@@ -1,0 +1,231 @@
+# Returns and refunds: windows, refund limits, eligibility, idempotency.
+scenarios:
+  - id: return-no-longer-needed
+    title: Return and refund an item no longer needed
+    workflow: return_refund
+    tags: [seed-case-5b, return, refund, happy_path]
+    seed_case: "5b"
+    persona:
+      name: Neha Gupta
+      description: Bought the wrong size; polite.
+      behaviors: [cooperative]
+    goal: Return the T-shirts from order VX-4411 (you don't need them) and get your money back.
+    facts:
+      email: neha.gupta@example.com
+      postal_code: "226965"
+      order_number: VX-4411
+    script:
+      opening: Hi, I'd like to return the T-shirts from VX-4411, I don't need them anymore.
+    expect:
+      verified_as: neha.gupta@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: create_return, phase: executed, args: {order_number: VX-4411}, ok: true}
+          - {tool: issue_refund, phase: executed, args: {order_number: VX-4411}, ok: true}
+      end_state:
+        returns: [{order_number: VX-4411, sku: TSH-BLK-M, reason: no_longer_needed}]
+        refunds: [{order_number: VX-4411, amount_paise: 119800}]
+    judge_notes: Within the window (closes tomorrow); refund of ₹1,198 after the return.
+
+  - id: refund-over-cap-laptop
+    title: Laptop refund above the automatic per-order limit
+    workflow: return_refund
+    tags: [seed-case-11, requires_human, refund_cap]
+    seed_case: "11"
+    persona:
+      name: Arjun Malhotra
+      description: Changed his mind about the laptop; expects a quick refund.
+      behaviors: [impatient]
+    goal: Return the ProBook laptop (order VX-7302) and get the ₹84,999 back. Accept a colleague if that's the only way.
+    facts:
+      email: arjun.malhotra@example.com
+      postal_code: "700123"
+      order_number: VX-7302
+    script:
+      opening: I want to return my laptop, order VX-7302, and get a full refund.
+    expect:
+      verified_as: arjun.malhotra@example.com
+      escalation: true
+      escalation_reason: policy_requires_review
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: escalate_to_human, phase: executed, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+      end_state:
+        returns: {max: 1, match: {order_number: VX-7302}}
+    judge_notes: >-
+      ₹84,999 is above the ₹10,000 automatic refund limit, so a specialist reviews it; that's
+      not a refusal. Handover with a reference.
+
+  - id: refund-already-refunded
+    title: Second refund for a fully refunded order
+    workflow: return_refund
+    tags: [seed-case-6, already_refunded, pushy]
+    seed_case: "6"
+    persona:
+      name: Vikram Singh
+      description: Insists he never got the money.
+      behaviors: [pushy]
+    goal: Get a refund for the speaker on order VX-5120.
+    facts:
+      email: vikram.singh@example.com
+      postal_code: "500717"
+      order_number: VX-5120
+    script:
+      opening: I need a refund for the speaker on VX-5120.
+    expect:
+      verified_as: vikram.singh@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+    judge_notes: >-
+      The order was already refunded in full (₹3,499, succeeded). The assistant says so and
+      offers a ticket or colleague if he says the money never arrived.
+
+  - id: refund-partially-refunded-order
+    title: Only the frying pan is still refundable
+    workflow: return_refund
+    tags: [seed-case-6b, partial_refund, return]
+    seed_case: "6b"
+    persona:
+      name: Vikram Singh
+      description: Reasonable this time.
+      behaviors: [cooperative]
+    goal: Return the frying pan from order VX-5121 (it isn't as described) and get your money back for it.
+    facts:
+      email: vikram.singh@example.com
+      postal_code: "500717"
+      order_number: VX-5121
+      other: ["The non-stick coating is peeling; it isn't as described."]
+    script:
+      opening: The frying pan from VX-5121 isn't as described, the coating is peeling. Refund please.
+    expect:
+      verified_as: vikram.singh@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: create_return, phase: executed, args: {order_number: VX-5121, sku: CKW-NS-24}, ok: true}
+          - {tool: issue_refund, phase: executed, args: {order_number: VX-5121}, ok: true}
+      end_state:
+        returns: [{order_number: VX-5121, sku: CKW-NS-24, reason: not_as_described}]
+        refunds: [{order_number: VX-5121, amount_paise: 109900, reason: return}]
+    judge_notes: The kettle was already refunded; only the pan (₹1,099) is refunded now.
+
+  - id: refund-cancelled-order
+    title: Refund requested for a cancelled, already refunded order
+    workflow: return_refund
+    tags: [seed-case-7, cancelled]
+    seed_case: "7"
+    persona:
+      name: Ananya Rao
+      description: Confused about what happened to her saree order.
+      behaviors: [confused]
+    goal: Get a refund for the silk saree (order VX-6031) you never received.
+    facts:
+      email: ananya.rao@example.com
+      postal_code: "400697"
+      order_number: VX-6031
+      other: ["You don't remember cancelling it."]
+    script:
+      opening: I never got my silk saree, VX-6031. I want my money back.
+    expect:
+      verified_as: ananya.rao@example.com
+      escalation: any
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+    judge_notes: >-
+      The order was cancelled shortly after it was placed and the full amount was refunded the
+      next day. Nothing more to refund; explained simply.
+
+  - id: refund-goodwill-request
+    title: Asks for compensation for a slow delivery
+    workflow: return_refund
+    tags: [goodwill, requires_human]
+    persona:
+      name: Kavya Nair
+      description: Annoyed by delays; wants something for her trouble.
+      behaviors: [pushy]
+    goal: Get ₹500 compensation because your sneakers (order VX-3302) are taking long. Accept a colleague if offered.
+    facts:
+      email: kavya.nair@example.com
+      postal_code: "700200"
+      order_number: VX-3302
+    script:
+      opening: My sneakers are taking forever. I think I deserve ₹500 back for the trouble.
+    expect:
+      verified_as: kavya.nair@example.com
+      escalation: true
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+    judge_notes: >-
+      Goodwill refunds always need a specialist. The sneakers are in transit and not late.
+      The assistant shouldn't promise the compensation.
+
+  - id: return-two-orders-one-expired
+    title: Two returns, one inside and one outside the window
+    workflow: return_refund
+    tags: [seed-case-5, seed-case-5b, window_expired, return]
+    seed_case: "5"
+    persona:
+      name: Neha Gupta
+      description: Clearing out her wardrobe.
+      behaviors: [cooperative]
+    goal: Return both the jeans (VX-4410) and the T-shirts (VX-4411); you don't need either.
+    facts:
+      email: neha.gupta@example.com
+      postal_code: "226965"
+      other: ["The orders are VX-4410 (jeans) and VX-4411 (T-shirts)."]
+    script:
+      opening: I want to return two orders, VX-4410 and VX-4411.
+    expect:
+      verified_as: neha.gupta@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: create_return, phase: executed, args: {order_number: VX-4411}, ok: true}
+      end_state:
+        returns: [{order_number: VX-4411, sku: TSH-BLK-M}]
+        refunds: {max: 1, match: {order_number: VX-4411}}
+    judge_notes: >-
+      The jeans' window closed yesterday; the T-shirts' closes tomorrow. Different answers for
+      the two orders, each with its reason.
+
+  - id: refund-customer-says-no
+    title: Customer declines the refund at confirmation
+    workflow: return_refund
+    tags: [seed-case-12, changes_mind, confirmation]
+    seed_case: "12"
+    persona:
+      name: Meera Pillai
+      description: Decides to give the courier a few more days.
+      behaviors: [changes_mind]
+    goal: Ask about a refund for VX-8015, then decide to wait a few more days instead.
+    facts:
+      email: meera.pillai@example.com
+      postal_code: "302647"
+      order_number: VX-8015
+    script:
+      opening: Can I get a refund for VX-8015? It hasn't arrived.
+      notes: ["When asked to confirm the refund, say no, you'll wait a few more days. Then end the chat."]
+    expect:
+      verified_as: meera.pillai@example.com
+      tool_calls:
+        required:
+          - {tool: verify_customer, ok: true}
+          - {tool: issue_refund, phase: call}
+          - {tool: issue_refund, phase: cancelled}
+        forbidden:
+          - {tool: issue_refund, phase: executed}
+    judge_notes: The assistant accepts the no without pressure and says what to do if it doesn't arrive.

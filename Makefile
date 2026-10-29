@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate
 
 up:
 	docker compose up -d --build
@@ -10,10 +10,10 @@ test:
 	cd backend && uv run pytest
 
 lint:
-	cd backend && uv run ruff check . && uv run ruff format --check .
+	cd backend && uv run ruff check . ../evals && uv run ruff format --check . ../evals
 
 format:
-	cd backend && uv run ruff check --fix . && uv run ruff format .
+	cd backend && uv run ruff check --fix . ../evals && uv run ruff format . ../evals
 
 migrate:
 	cd backend && uv run alembic upgrade head
@@ -37,3 +37,12 @@ ingest-policies:
 # Recall@1/3/5 and MRR for vector, full-text and hybrid search; writes the report.
 eval-retrieval:
 	cd backend && uv run python -m app.retrieval.evaluate --output ../evals/retrieval/results.md
+
+# Agent evaluation: simulated customers over /ws/chat, a fresh database per run.
+# Pass options through ARGS, e.g. make eval ARGS="--tags refund --runs 1 --no-judge".
+eval:
+	cd backend && PYTHONPATH=../evals uv run python -m harness run $(ARGS)
+
+# Check the scenario files against the seed data (no database, no LLM).
+eval-validate:
+	cd backend && PYTHONPATH=../evals uv run python -m harness validate

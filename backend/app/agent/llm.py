@@ -7,11 +7,14 @@ HTTP response, so an abandoned generation stops consuming tokens.
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
+
+from app.agent.ratelimit import TokenRateLimiter, estimate_prompt_tokens
 
 log = logging.getLogger(__name__)
 
@@ -109,9 +112,18 @@ class GroqClient:
         timeout_s: float = 20.0,
         max_completion_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        seed: int | None = None,
+        rate_limiter: TokenRateLimiter | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.model = model
+        self.seed = seed  # best effort: the provider may still vary between runs
+        self.rate_limiter = rate_limiter
+        self.rate_limit_wait_s = 0.0  # time this client spent waiting for quota
+        self.last_error: str | None = None  # the provider's last error body, for reports
+        # Reported prompt tokens / estimated, smoothed: the estimate learns this model's
+        # tokenizer, so the limiter books close to what the provider will count.
+        self._prompt_ratio = 1.0
         self.temperature = temperature
         self.max_completion_tokens = max_completion_tokens
         self.reasoning_effort = reasoning_effort
@@ -142,6 +154,8 @@ class GroqClient:
             body["include_reasoning"] = False
         if stop:
             body["stop"] = stop
+        if self.seed is not None:
+            body["seed"] = self.seed
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -149,11 +163,20 @@ class GroqClient:
         calls = _ToolCallBuilder()
         finish_reason = None
         usage: dict[str, Any] = {}
+        booking = None
+        prompt_estimate = estimate_prompt_tokens(messages, tools)
+        if self.rate_limiter is not None:
+            started = time.monotonic()
+            booking = await self.rate_limiter.acquire(
+                int(prompt_estimate * self._prompt_ratio) + (self.max_completion_tokens or 1024)
+            )
+            self.rate_limit_wait_s += time.monotonic() - started
         try:
             async with self._http.stream("POST", "/chat/completions", json=body) as response:
                 if response.status_code >= 400:
                     detail = (await response.aread()).decode(errors="replace")[:500]
                     retryable = response.status_code == 429 or response.status_code >= 500
+                    self.last_error = f"HTTP {response.status_code}: {detail}"
                     raise LLMError(
                         f"LLM HTTP {response.status_code}: {detail}",
                         retryable=retryable,
@@ -180,6 +203,11 @@ class GroqClient:
             raise LLMError("LLM request timed out", retryable=True) from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"LLM transport error: {type(exc).__name__}", retryable=True) from exc
+        if booking is not None and usage:
+            prompt = int(usage.get("prompt_tokens") or 0)
+            self.rate_limiter.settle(booking, prompt + int(usage.get("completion_tokens") or 0))
+            if prompt and prompt_estimate:
+                self._prompt_ratio = 0.7 * self._prompt_ratio + 0.3 * (prompt / prompt_estimate)
         yield Completion(
             text="".join(text), tool_calls=calls.build(), finish_reason=finish_reason, usage=usage
         )

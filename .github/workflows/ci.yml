@@ -55,6 +55,10 @@ jobs:
       - name: Fetch embedding model
         run: uv run python -c "from app.retrieval.embedding import embedder_from_settings as e; e().embed_query('warm up')"
       - name: Lint
-        run: uv run ruff check . && uv run ruff format --check .
+        run: uv run ruff check . ../evals && uv run ruff format --check . ../evals
       - name: Test
         run: uv run pytest
+      # Offline: scenario files against the seed data. Full eval runs need GROQ_API_KEY and
+      # minutes to hours of LLM time, so they're run by hand (make eval), not on every push.
+      - name: Validate eval scenarios
+        run: PYTHONPATH=../evals uv run python -m harness validate

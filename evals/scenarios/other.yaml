@@ -1,0 +1,118 @@
+# Other enquiries: policy questions, requests for a person, things the agent can't do itself.
+scenarios:
+  - id: other-asks-for-a-human
+    title: Customer asks for a person straight away
+    workflow: other
+    tags: [escalation, customer_requested, unverified]
+    persona:
+      name: Rohan Iyer
+      description: Doesn't like talking to bots.
+      behaviors: [impatient]
+    goal: Speak to a human. You won't explain your problem to the assistant.
+    facts:
+      email: rohan.iyer@example.com
+      postal_code: "600504"
+    script:
+      opening: I want to talk to a real person please.
+      notes: ["If asked what it's about, say it's about a delivery and you'd rather explain to a person."]
+    expect:
+      escalation: true
+      escalation_reason: customer_requested
+      tool_calls:
+        required:
+          - {tool: escalate_to_human, phase: executed, ok: true}
+    judge_notes: The request for a person is honoured promptly, with a reference.
+
+  - id: other-policy-return-window
+    title: Unverified caller asks a general policy question
+    workflow: other
+    tags: [policy_question, unverified, rag]
+    persona:
+      name: Anonymous shopper
+      description: Hasn't bought anything yet; checking before ordering.
+      behaviors: [cooperative]
+    goal: Find out how long you'd have to return an item, and how long a refund takes.
+    facts:
+      other: ["You don't have an account or an order yet."]
+    script:
+      opening: Hi, how long do I have to return something, and how long do refunds take?
+    expect:
+      verified_as: null
+      tool_calls:
+        required:
+          - {tool: search_policies, ok: true, only_in_mode: retrieval}
+        forbidden:
+          - {tool: verify_customer}
+    judge_notes: >-
+      30 days from delivery; refunds usually arrive 5 to 7 business days after they're issued.
+      No verification is needed for general policy.
+
+  - id: other-policy-shipping-fee
+    title: Shipping fee question
+    workflow: other
+    tags: [policy_question, unverified, rag]
+    persona:
+      name: Anonymous shopper
+      description: Price-conscious.
+      behaviors: [vague]
+    goal: Find out whether you'd pay for delivery on a ₹350 order.
+    facts:
+      other: ["You're thinking of buying something for ₹350."]
+    script:
+      opening: do you charge for delivery?
+    expect:
+      verified_as: null
+      tool_calls:
+        required:
+          - {tool: search_policies, ok: true, only_in_mode: retrieval}
+    judge_notes: Free from ₹499; below that a ₹40 fee, so a ₹350 order pays ₹40.
+
+  - id: other-change-delivery-address
+    title: Wants to change the address on a placed order
+    workflow: other
+    tags: [unsupported_request, handoff]
+    seed_case: "3"
+    persona:
+      name: Kavya Nair
+      description: Moving house next week.
+      behaviors: [cooperative]
+    goal: Change the delivery address of your yoga mat order (VX-3301). Accept a ticket or a colleague.
+    facts:
+      email: kavya.nair@example.com
+      postal_code: "700200"
+      order_number: VX-3301
+      other: ["Your new address is 14 Lake Road, Kolkata 700029."]
+    script:
+      opening: Can I change the delivery address for my yoga mat order VX-3301?
+    expect:
+      verified_as: kavya.nair@example.com
+      escalation: any
+      handoff_required: true
+      end_state:
+        tickets: any
+    judge_notes: >-
+      The assistant can't change addresses itself, so it opens a ticket or hands over, and
+      says what happens next. It shouldn't claim the address was changed.
+
+  - id: other-gst-invoice
+    title: Asks for a GST invoice
+    workflow: other
+    tags: [unsupported_request, handoff]
+    persona:
+      name: Aarav Mehta
+      description: Needs the invoice for expenses.
+      behaviors: [cooperative]
+    goal: Get a GST invoice for your socks order VX-2140. Accept a ticket.
+    facts:
+      email: aarav.mehta@example.com
+      postal_code: "500471"
+      order_number: VX-2140
+    script:
+      opening: I need a GST invoice for order VX-2140.
+    expect:
+      verified_as: aarav.mehta@example.com
+      escalation: any
+      handoff_required: true
+      end_state:
+        tickets: any
+    judge_notes: Not something the assistant can produce; a ticket or handover, without inventing an invoice.

@@ -1,0 +1,41 @@
+# Eval harness configuration (python -m harness run). Secrets come from .env (GROQ_API_KEY).
+
+runs_per_scenario: 3       # LLM output varies: every scenario runs this many times
+# Parallel runs, each with its own database and app instance. 1 suits Groq's free tier
+# (8K TPM fits about one conversation at a time); raise it with rate_limits on a paid plan.
+concurrency: 1
+seed: 20261029             # base seed; each run's seed = hash(seed, scenario id, run index)
+policy_context_mode: null  # null: the app's POLICY_CONTEXT_MODE; or retrieval | full_text
+
+agent:
+  model: null              # null: the app's GROQ_MODEL (what production uses)
+  temperature: null        # null: the app's LLM_TEMPERATURE
+  # Longer than production's 30 s: with several runs sharing one rate limit, waiting for
+  # quota happens inside a turn. Latency is measured separately (milestone 4), not here.
+  turn_timeout_s: 120
+
+customer:                  # the simulated customer
+  model: openai/gpt-oss-20b
+  temperature: 0.6
+  max_completion_tokens: 300
+  reasoning_effort: low
+
+judge:
+  enabled: true
+  model: openai/gpt-oss-120b
+  temperature: 0
+  max_completion_tokens: 800
+  reasoning_effort: low
+  rubric: rubrics/judge-v1.md
+
+# Client-side tokens per minute per model, shared by all runs. Match your Groq plan:
+# the free tier allowed 8,000 TPM for gpt-oss-120b when this was written; the Developer plan
+# lists 250,000 (console.groq.com/docs/models).
+rate_limits:
+  openai/gpt-oss-120b: 8000
+  openai/gpt-oss-20b: 8000
+
+# USD per million tokens, from console.groq.com/docs/models (checked 2026-10-29).
+prices:
+  openai/gpt-oss-120b: {input: 0.15, output: 0.60}
+  openai/gpt-oss-20b: {input: 0.075, output: 0.30}

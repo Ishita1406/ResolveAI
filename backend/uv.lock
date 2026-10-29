@@ -1653,6 +1653,7 @@ dependencies = [
 dev = [
     { name = "pytest" },
     { name = "ruff" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -1674,6 +1675,7 @@ requires-dist = [
 dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "ruff", specifier = ">=0.17.3" },
+    { name = "websockets", specifier = ">=17.3" },
 ]
 
 [[package]]
