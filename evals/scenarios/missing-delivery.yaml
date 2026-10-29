@@ -3,7 +3,7 @@ scenarios:
   - id: missing-refund
     title: Overdue parcel, customer wants a refund
     workflow: missing_delivery
-    tags: [seed-case-12, refund, happy_path]
+    tags: [smoke, seed-case-12, refund, happy_path]
     seed_case: "12"
     persona:
       name: Meera Pillai
@@ -31,7 +31,7 @@ scenarios:
   - id: missing-replacement
     title: Overdue parcel, customer wants a replacement
     workflow: missing_delivery
-    tags: [seed-case-12, reship, happy_path]
+    tags: [smoke, seed-case-12, reship, happy_path]
     seed_case: "12"
     persona:
       name: Meera Pillai

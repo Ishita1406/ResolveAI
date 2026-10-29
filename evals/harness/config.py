@@ -41,6 +41,11 @@ class Price(Strict):
     output: float
 
 
+class CIGate(Strict):
+    max_success_drop: float = Field(0.10, ge=0, le=1)  # vs the stored baseline
+    max_error_rate: float = Field(0.20, ge=0, le=1)  # more errored runs = inconclusive
+
+
 class EvalConfig(Strict):
     runs_per_scenario: int = Field(3, ge=1)
     concurrency: int = Field(1, ge=1)
@@ -51,6 +56,7 @@ class EvalConfig(Strict):
     judge: JudgeModel
     rate_limits: dict[str, int] = Field(default_factory=dict)  # tokens per minute, per model
     prices: dict[str, Price] = Field(default_factory=dict)
+    ci: CIGate = Field(default_factory=CIGate)
 
     def cost_usd(self, model: str, usage: dict[str, int]) -> float | None:
         price = self.prices.get(model)

@@ -5,8 +5,24 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to the same branch makes an older run pointless (and the smoke eval costs
+# LLM quota), so cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  POSTGRES_HOST: 127.0.0.1
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: postgres
+  POSTGRES_DB: resolveai
+  TEST_POSTGRES_DB: resolveai_test
+  REDIS_URL: redis://127.0.0.1:6379/0
+  EMBEDDING_CACHE_DIR: /home/runner/.cache/resolveai/fastembed
+
 jobs:
   backend:
+    name: Lint and unit tests
     runs-on: ubuntu-latest
     services:
       # Throwaway CI-only database; trust auth means no credential to store.
@@ -30,14 +46,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-    env:
-      POSTGRES_HOST: 127.0.0.1
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: postgres
-      POSTGRES_DB: resolveai
-      TEST_POSTGRES_DB: resolveai_test
-      REDIS_URL: redis://127.0.0.1:6379/0
-      EMBEDDING_CACHE_DIR: /home/runner/.cache/resolveai/fastembed
     defaults:
       run:
         working-directory: backend
@@ -47,7 +55,7 @@ jobs:
         with:
           version: "0.12.3"
       - run: uv sync --locked
-      # The embedding model (~65 MB) for the retrieval quality test; downloaded on a miss.
+      # The embedding model (~65 MB) for retrieval tests; downloaded on a miss.
       - uses: actions/cache@v4
         with:
           path: /home/runner/.cache/resolveai/fastembed
@@ -56,9 +64,91 @@ jobs:
         run: uv run python -c "from app.retrieval.embedding import embedder_from_settings as e; e().embed_query('warm up')"
       - name: Lint
         run: uv run ruff check . ../evals && uv run ruff format --check . ../evals
-      - name: Test
+      - name: Unit tests
         run: uv run pytest
-      # Offline: scenario files against the seed data. Full eval runs need GROQ_API_KEY and
-      # minutes to hours of LLM time, so they're run by hand (make eval), not on every push.
       - name: Validate eval scenarios
         run: PYTHONPATH=../evals uv run python -m harness validate
+
+  smoke-eval:
+    name: Smoke eval (gated on the stored baseline)
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.0-pg14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:8.6.7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # Repository secret. Not available to pull requests from forks: the job then skips
+      # with a warning instead of failing for a reason the author can't fix.
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      # Repository variables (Settings > Secrets and variables > Actions > Variables).
+      EVAL_SMOKE_RUNS: ${{ vars.EVAL_SMOKE_RUNS || '1' }}
+      EVAL_CONCURRENCY: ${{ vars.EVAL_CONCURRENCY || '1' }}
+      EVAL_MAX_SUCCESS_DROP: ${{ vars.EVAL_MAX_SUCCESS_DROP || '0.10' }}
+      EVAL_MAX_ERROR_RATE: ${{ vars.EVAL_MAX_ERROR_RATE || '0.20' }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Check for the Groq API key
+        id: key
+        working-directory: ${{ github.workspace }}  # before checkout: backend/ isn't there yet
+        run: |
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "::warning::GROQ_API_KEY is not set for this run; the smoke eval was skipped."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.key.outputs.present == 'true'
+        with:
+          version: "0.12.3"
+      - run: uv sync --locked
+        if: steps.key.outputs.present == 'true'
+      - uses: actions/cache@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          path: /home/runner/.cache/resolveai/fastembed
+          key: fastembed-bge-small-en-v1.5
+      - name: Run the smoke suite
+        if: steps.key.outputs.present == 'true'
+        # The judge is off: it never gates, and its tokens are better spent on scenarios.
+        run: >-
+          PYTHONPATH=../evals uv run python -m harness run --tags smoke --no-judge
+          --runs "$EVAL_SMOKE_RUNS" --concurrency "$EVAL_CONCURRENCY"
+          --output-dir ../evals/results/ci-smoke
+      - name: Gate on the baseline (unauthorized actions and data leaks must be 0)
+        if: steps.key.outputs.present == 'true'
+        run: >-
+          PYTHONPATH=../evals uv run python -m harness compare
+          --results ../evals/results/ci-smoke/results.json
+          --baseline ../evals/baselines/smoke.json
+          --max-drop "$EVAL_MAX_SUCCESS_DROP" --max-error-rate "$EVAL_MAX_ERROR_RATE"
+      - name: Upload the report
+        if: always() && steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-eval
+          path: evals/results/ci-smoke/
+          if-no-files-found: ignore

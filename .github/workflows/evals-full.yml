@@ -1,0 +1,96 @@
+name: Full eval suite
+
+# Manual only: the full suite (95 scenarios, 3 runs each, with the judge) uses roughly
+# 2-3M tokens and hours of LLM time. Start it from the Actions tab or `gh workflow run`.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs per scenario
+        default: "3"
+      concurrency:
+        description: Parallel runs (match your Groq plan's rate limits)
+        default: "1"
+      tags:
+        description: Only scenarios with any of these tags (comma-separated; empty = all)
+        default: ""
+      judge:
+        description: Run the LLM judge
+        type: boolean
+        default: true
+
+env:
+  POSTGRES_HOST: 127.0.0.1
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: postgres
+  POSTGRES_DB: resolveai
+  TEST_POSTGRES_DB: resolveai_test
+  REDIS_URL: redis://127.0.0.1:6379/0
+  EMBEDDING_CACHE_DIR: /home/runner/.cache/resolveai/fastembed
+  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+jobs:
+  full-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # the GitHub-hosted maximum
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.0-pg14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:8.6.7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Require the Groq API key
+        working-directory: ${{ github.workspace }}  # before checkout: backend/ isn't there yet
+        run: test -n "$GROQ_API_KEY" || { echo "::error::Set the GROQ_API_KEY secret."; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.3"
+      - run: uv sync --locked
+      - uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/resolveai/fastembed
+          key: fastembed-bge-small-en-v1.5
+      - name: Run the suite
+        env:
+          RUNS: ${{ inputs.runs }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          TAGS: ${{ inputs.tags }}
+          JUDGE: ${{ inputs.judge }}
+        run: |
+          args=(--runs "$RUNS" --concurrency "$CONCURRENCY" --output-dir ../evals/results/ci-full)
+          [ -n "$TAGS" ] && args+=(--tags "$TAGS")
+          [ "$JUDGE" = "true" ] || args+=(--no-judge)
+          PYTHONPATH=../evals uv run python -m harness run "${args[@]}"
+      - name: Gate (unauthorized actions and data leaks must be 0; baseline if stored)
+        # Without evals/baselines/full.json only the hard gates and the error rate apply.
+        run: >-
+          PYTHONPATH=../evals uv run python -m harness compare
+          --results ../evals/results/ci-full/results.json
+          --baseline ../evals/baselines/full.json
+      - name: Upload results (download results.json to refresh the stored baseline)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-eval
+          path: evals/results/ci-full/
+          if-no-files-found: ignore

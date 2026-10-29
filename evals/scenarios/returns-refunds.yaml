@@ -31,7 +31,7 @@ scenarios:
   - id: refund-over-cap-laptop
     title: Laptop refund above the automatic per-order limit
     workflow: return_refund
-    tags: [seed-case-11, requires_human, refund_cap]
+    tags: [smoke, seed-case-11, requires_human, refund_cap]
     seed_case: "11"
     persona:
       name: Arjun Malhotra

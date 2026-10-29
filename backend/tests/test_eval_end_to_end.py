@@ -128,3 +128,47 @@ async def test_runs_are_isolated_scored_and_reported(test_db_settings, redis_up)
     finally:
         admin.dispose()
     assert left == []
+
+
+async def test_policy_replay_flags_writes_policy_forbids(test_db_settings):
+    from datetime import timedelta
+
+    from harness.checks import RunData
+    from harness.databases import Databases
+    from harness.replay import replay_check
+
+    from app.db.seed import ANCHOR
+
+    databases = Databases(test_db_settings)
+    await databases.build_template(HashingEmbedder())
+    engine = create_engine(databases.settings_for(databases.template).database_url())
+    with engine.connect() as conn:
+        ids = dict(conn.execute(text(
+            "SELECT email, id FROM customers WHERE email IN "
+            "('meera.pillai@example.com', 'vikram.singh@example.com')")).all())  # fmt: skip
+    engine.dispose()
+
+    def executed(tool, **args):
+        return {"tool": tool, "phase": "executed", "ok": True, "arguments": args}
+
+    def clock():
+        return ANCHOR + timedelta(minutes=2)
+
+    refund = executed("issue_refund", order_number="VX-8015", reason="missing_delivery")
+    try:
+        meera = RunData(verified_customer_id=ids["meera.pillai@example.com"],
+                        verified_email="meera.pillai@example.com")  # fmt: skip
+        meera.tool_log = [refund]
+        assert (await replay_check(databases, meera, clock)).ok
+        meera.tool_log = [refund, refund]  # the second one is judged after the first
+        twice = await replay_check(databases, meera, clock)
+        assert not twice.ok and "already" in twice.detail
+
+        vikram = RunData(verified_customer_id=ids["vikram.singh@example.com"],
+                         verified_email="vikram.singh@example.com")  # fmt: skip
+        vikram.tool_log = [executed("issue_refund", order_number="VX-5120", reason="goodwill")]
+        refused = await replay_check(databases, vikram, clock)
+        assert not refused.ok and "issue_refund" in refused.detail
+    finally:
+        await databases.drop_template()
+        databases.dispose()

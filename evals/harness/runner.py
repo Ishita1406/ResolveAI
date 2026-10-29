@@ -15,17 +15,19 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.agent.llm import GroqClient, LLMClient, LLMError
+from app.agent.prompts import load_prompts, render_system_prompt
 from app.agent.ratelimit import TokenRateLimiter
 from app.config import Settings
 from app.db.seed import ANCHOR
 from app.policy.config import PolicyConfig, get_policy
 from app.retrieval.embedding import Embedder
-from harness.checks import Check, RunData, collect, score
+from harness.checks import ACTION_CHECKS, LEAK_CHECKS, Check, RunData, collect, score
 from harness.client import ChatClient
 from harness.config import EVALS_DIR, EvalConfig
 from harness.customer import SimulatedCustomer
 from harness.databases import Databases
 from harness.judge import Verdict, judge, load_rubric
+from harness.replay import replay_check
 from harness.scenario import Scenario
 from harness.server import serve
 
@@ -65,6 +67,8 @@ class RunResult:
     error: str | None = None
     duration_s: float = 0.0
     quota_wait_s: float = 0.0  # time the agent's LLM client waited for rate-limit quota
+    unauthorized: list[str] = field(default_factory=list)  # writes policy forbids (must be [])
+    leaks: list[str] = field(default_factory=list)  # account data exposed (must be [])
 
     def check(self, name: str) -> Check | None:
         return next((c for c in self.checks if c.name == name), None)
@@ -129,6 +133,10 @@ class Harness:
         self.databases = Databases(settings)
         self.rubric = load_rubric(EVALS_DIR / config.judge.rubric)
         self.stopped: str | None = None  # set when a daily quota runs out
+        # The instructions without any policy text: what a reply must never repeat.
+        self.system_prompt = render_system_prompt(
+            load_prompts(settings.agent_prompt_version), self.policy
+        )
 
     async def prepare(self) -> None:
         await self.databases.drop_leftovers()
@@ -198,7 +206,14 @@ class Harness:
                     data = await collect(db, self.databases.baseline)
             finally:
                 await engine.dispose()
-            self._score(scenario, data, result, getattr(agent_llm, "rate_limit_wait_s", 0.0))
+            replayed = await replay_check(
+                self.databases,
+                data,
+                lambda: ANCHOR + timedelta(seconds=time.monotonic() - started),
+            )
+            self._score(
+                scenario, data, result, getattr(agent_llm, "rate_limit_wait_s", 0.0), [replayed]
+            )
             provider_error = getattr(agent_llm, "last_error", None)
             if result.status == "error" and provider_error:
                 result.error = f"{result.error}\nprovider: {provider_error}"
@@ -284,21 +299,36 @@ class Harness:
                     result.finished = await customer.next_message(reply) is None
 
     def _score(
-        self, scenario: Scenario, data: RunData, result: RunResult, quota_wait_s: float
+        self,
+        scenario: Scenario,
+        data: RunData,
+        result: RunResult,
+        quota_wait_s: float,
+        extra: list[Check],
     ) -> None:
         result.tool_log = data.tool_log
         result.new_rows = {
             kind: getattr(data, kind)
             for kind in ("refunds", "returns", "replacements", "tickets", "escalations")
         }
-        result.checks = score(
-            scenario,
-            data,
-            policy=self.policy,
-            mode=self.mode,
-            finished=result.finished,
-            agent_replies=[t["text"] for t in result.transcript if t["role"] == "agent"],
+        result.checks = (
+            score(
+                scenario,
+                data,
+                policy=self.policy,
+                mode=self.mode,
+                finished=result.finished,
+                agent_replies=[t["text"] for t in result.transcript if t["role"] == "agent"],
+                system_prompt=self.system_prompt,
+            )
+            + extra
         )
+        result.unauthorized = [
+            f"{c.name}: {c.detail}" for c in result.checks if c.name in ACTION_CHECKS and not c.ok
+        ]
+        result.leaks = [
+            f"{c.name}: {c.detail}" for c in result.checks if c.name in LEAK_CHECKS and not c.ok
+        ]
         result.quota_wait_s = round(quota_wait_s, 1)
         infra = data.infra_error(quota_wait_s)
         if infra:

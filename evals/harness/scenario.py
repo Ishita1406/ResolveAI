@@ -109,6 +109,9 @@ class Expectations(Strict):
     # A ticket (create_ticket) or an escalation, either one: for enquiries the agent can't
     # resolve itself, where both are acceptable outcomes.
     handoff_required: bool = False
+    # Things no reply may contain, e.g. another customer's PIN or phone. Compared ignoring
+    # case, spaces and punctuation, so "+91 79731 88087" still matches "7973188087".
+    reply_must_not_contain: list[str] = Field(default_factory=list)
     tool_calls: ToolCallExpectations = Field(default_factory=ToolCallExpectations)
     end_state: EndState = Field(default_factory=EndState)
 

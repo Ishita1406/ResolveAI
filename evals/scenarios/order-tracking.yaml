@@ -3,7 +3,7 @@ scenarios:
   - id: track-split-shipments
     title: Smartwatch delivered, charger still in transit
     workflow: order_tracking
-    tags: [seed-case-2, split_shipment]
+    tags: [smoke, seed-case-2, split_shipment]
     seed_case: "2"
     persona:
       name: Aarav Mehta
@@ -57,7 +57,7 @@ scenarios:
   - id: track-which-order
     title: Several orders in flight; the customer doesn't say which
     workflow: order_tracking
-    tags: [seed-case-3, multiple_orders, vague]
+    tags: [smoke, seed-case-3, multiple_orders, vague]
     seed_case: "3"
     persona:
       name: Kavya Nair

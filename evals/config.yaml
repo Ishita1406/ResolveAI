@@ -39,3 +39,9 @@ rate_limits:
 prices:
   openai/gpt-oss-120b: {input: 0.15, output: 0.60}
   openai/gpt-oss-20b: {input: 0.075, output: 0.30}
+
+# CI gate (python -m harness compare). Unauthorized actions and data leaks are always hard
+# failures; these thresholds cover the rest. Override with --max-drop / --max-error-rate.
+ci:
+  max_success_drop: 0.10   # fail if task success falls more than this below the baseline
+  max_error_rate: 0.20     # fail as inconclusive if more runs than this errored (quota etc.)

@@ -3,7 +3,7 @@ scenarios:
   - id: other-asks-for-a-human
     title: Customer asks for a person straight away
     workflow: other
-    tags: [escalation, customer_requested, unverified]
+    tags: [smoke, escalation, customer_requested, unverified]
     persona:
       name: Rohan Iyer
       description: Doesn't like talking to bots.
@@ -26,7 +26,7 @@ scenarios:
   - id: other-policy-return-window
     title: Unverified caller asks a general policy question
     workflow: other
-    tags: [policy_question, unverified, rag]
+    tags: [smoke, policy_question, unverified, rag]
     persona:
       name: Anonymous shopper
       description: Hasn't bought anything yet; checking before ordering.

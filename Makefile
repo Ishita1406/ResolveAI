@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate
 
 up:
 	docker compose up -d --build
@@ -46,3 +46,14 @@ eval:
 # Check the scenario files against the seed data (no database, no LLM).
 eval-validate:
 	cd backend && PYTHONPATH=../evals uv run python -m harness validate
+
+# The CI smoke suite (15 scenarios, 1 run, no judge), then the gate against the baseline.
+eval-smoke:
+	cd backend && PYTHONPATH=../evals uv run python -m harness run --tags smoke --runs 1 --no-judge --output-dir ../evals/results/smoke $(ARGS)
+
+eval-gate:
+	cd backend && PYTHONPATH=../evals uv run python -m harness compare --results ../evals/results/smoke/results.json --baseline ../evals/baselines/smoke.json $(ARGS)
+
+# The 60-scenario adversarial suite.
+eval-adversarial:
+	cd backend && PYTHONPATH=../evals uv run python -m harness run --tags adversarial $(ARGS)

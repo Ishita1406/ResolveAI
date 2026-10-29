@@ -3,7 +3,7 @@ scenarios:
   - id: damaged-return-and-refund
     title: Damaged T-shirts inside the window; return and refund
     workflow: damaged_product
-    tags: [seed-case-5b, return, refund, happy_path]
+    tags: [smoke, seed-case-5b, return, refund, happy_path]
     seed_case: "5b"
     persona:
       name: Neha Gupta

@@ -1,15 +1,18 @@
-"""python -m harness {run,list,validate}. Run from backend/ with PYTHONPATH=../evals
-(the Makefile's `eval` targets do this).
+"""python -m harness {run,list,validate,baseline,compare}. Run from backend/ with
+PYTHONPATH=../evals (the Makefile's `eval` targets do this).
 
     run       play scenarios against the agent and write results.json + report.md
     list      show scenarios (filtered by --tags / --ids)
     validate  check scenario files against the seed data, offline
+    baseline  turn a results.json into a baseline file to commit
+    compare   the CI gate: a results.json against a baseline; exit 1 if it fails
 """
 
 import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +20,7 @@ from pathlib import Path
 from app.agent.prompts import load_prompts
 from app.config import get_settings
 from app.retrieval.embedding import embedder_from_settings
+from harness.baseline import compare, make_baseline
 from harness.config import CONFIG_PATH, EVALS_DIR, load_config
 from harness.report import markdown, metrics, results_json
 from harness.runner import GroqFactory, Harness
@@ -145,12 +149,22 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--ids", help="comma-separated scenario ids")
         if name == "run":
             p.add_argument("--runs", type=int, help="runs per scenario (config: 3)")
-            p.add_argument("--concurrency", type=int, help="parallel runs (config: 2)")
+            p.add_argument("--concurrency", type=int, help="parallel runs (config: 1)")
             p.add_argument("--policy-mode", choices=["retrieval", "full_text"])
             p.add_argument("--no-judge", action="store_true")
             p.add_argument("--config", type=Path, default=CONFIG_PATH)
             p.add_argument("--output-dir", type=Path)
             p.add_argument("--verbose", action="store_true")
+    p = sub.add_parser("baseline")
+    p.add_argument("--results", type=Path, required=True, help="a results.json from `run`")
+    p.add_argument("--suite", required=True, help="name, e.g. smoke or full")
+    p.add_argument("--output", type=Path, required=True)
+    p = sub.add_parser("compare")
+    p.add_argument("--results", type=Path, required=True)
+    p.add_argument("--baseline", type=Path, required=True)
+    p.add_argument("--max-drop", type=float, help="allowed task-success drop (config: ci)")
+    p.add_argument("--max-error-rate", type=float, help="errored-run share (config: ci)")
+    p.add_argument("--config", type=Path, default=CONFIG_PATH)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING if getattr(args, "verbose", False) else logging.ERROR)
 
@@ -163,6 +177,31 @@ def main(argv: list[str] | None = None) -> int:
         found = problems(scenarios)
         print("\n".join(found) if found else f"{len(scenarios)} scenarios OK")
         return 1 if found else 0
+    if args.command == "baseline":
+        results = json.loads(args.results.read_text())
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(make_baseline(results, args.suite), indent=2) + "\n")
+        print(f"Wrote {args.output}")
+        return 0
+    if args.command == "compare":
+        gate = load_config(args.config).ci
+        if not args.baseline.exists():
+            print(f"::warning::No baseline at {args.baseline}; only the hard gates apply.")
+        verdict = compare(
+            json.loads(args.results.read_text()),
+            json.loads(args.baseline.read_text()) if args.baseline.exists() else None,
+            max_drop=gate.max_success_drop if args.max_drop is None else args.max_drop,
+            max_error_rate=(
+                gate.max_error_rate if args.max_error_rate is None else args.max_error_rate
+            ),
+        )
+        text = verdict.markdown()
+        print(text)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:  # shown on the workflow run's page
+            with open(summary, "a") as f:
+                f.write(text)
+        return 0 if verdict.ok else 1
     return asyncio.run(_run(args))
 
 
