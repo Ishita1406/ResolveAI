@@ -1,9 +1,11 @@
 from datetime import datetime
 from enum import StrEnum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     DateTime,
     Enum,
     ForeignKey,
@@ -15,7 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import (
@@ -350,3 +352,43 @@ class PolicyDecisionLog(Base):
         CheckConstraint("stage IN ('proposal', 'execution')", name="stage_known"),
         CheckConstraint("verdict IN ('approve', 'reject', 'require_human')", name="verdict_known"),
     )
+
+
+# Fixed by the column type: a model with another dimension needs a migration (and re-ingest).
+EMBEDDING_DIM = 384
+# Section headings weigh most, then the text, then the document title (shared by all sections).
+POLICY_CHUNK_TSV = (
+    "setweight(to_tsvector('english', section), 'A') || "
+    "setweight(to_tsvector('english', content), 'B') || "
+    "setweight(to_tsvector('english', title), 'C')"
+)
+
+
+class PolicyChunk(Base):
+    """One heading section of a policy document in docs/policies/, embedded for retrieval."""
+
+    __tablename__ = "policy_chunks"
+    __table_args__ = (
+        UniqueConstraint("document", "section_id"),
+        Index("ix_policy_chunks_tsv", "tsv", postgresql_using="gin"),
+        Index(
+            "ix_policy_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id: Mapped[int] = pk()
+    document: Mapped[str] = mapped_column(String(64))  # file stem, e.g. "refunds"
+    title: Mapped[str] = mapped_column(String(200))  # document title (the H1)
+    section: Mapped[str] = mapped_column(String(200))  # section heading (an H2)
+    section_id: Mapped[str] = mapped_column(String(200))  # heading slug, unique per document
+    position: Mapped[int]  # order within the document
+    content: Mapped[str] = mapped_column(Text)
+    # sha256 prefix of the document text: re-ingesting an unchanged document is a no-op.
+    version: Mapped[str] = mapped_column(String(16))
+    embedding_model: Mapped[str] = mapped_column(String(100))
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    tsv: Mapped[str] = mapped_column(TSVECTOR, Computed(POLICY_CHUNK_TSV, persisted=True))
+    ingested_at: Mapped[datetime] = created_at()

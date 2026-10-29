@@ -46,6 +46,7 @@ from app.domain.formatting import format_inr
 from app.policy import gate
 from app.policy.config import PolicyConfig
 from app.policy.state import ActionState
+from app.retrieval.search import PolicyRetriever
 from app.tools.base import READ_TOOLS, WRITE_TOOLS
 from app.tools.context import ToolContext
 from app.tools.registry import call_tool
@@ -54,7 +55,7 @@ from app.tools.schema import llm_tool_definitions
 log = logging.getLogger(__name__)
 
 CUSTOMER_TAG = "customer_message"
-UNVERIFIED_TOOLS = frozenset({"verify_customer", "escalate_to_human"})
+UNVERIFIED_TOOLS = frozenset({"verify_customer", "escalate_to_human", "search_policies"})
 # Replies are single spoken paragraphs. Longer runs of whitespace than this mean the model is
 # degenerating (it has been seen padding a reply with spaces until the token cap).
 MAX_BLANK_RUN = 8
@@ -121,17 +122,28 @@ class Agent:
         policy: PolicyConfig,
         config: AgentConfig | None = None,
         clock: Callable[[], datetime] = _utcnow,
+        retriever: PolicyRetriever | None = None,
+        policy_documents: str | None = None,
     ) -> None:
+        """Policy text reaches the model through `retriever` (search_policies) or, in full-text
+        mode, `policy_documents` in the system prompt; with neither, it gets no policy text."""
         self.llm = llm
         self.store = store
         self.db_factory = db_factory
         self.prompts = prompts
         self.config = config or AgentConfig()
         self.clock = clock
-        self.system_prompt = render_system_prompt(prompts, policy)
-        # Before verification only verification and handoff are offered: the rest would be
-        # refused anyway, and their schemas are most of each request's tokens.
-        all_tools = llm_tool_definitions()
+        self.retriever = retriever
+        self.system_prompt = render_system_prompt(
+            prompts, policy, retrieval=retriever is not None, policy_documents=policy_documents
+        )
+        # Before verification only verification, policy search and handoff are offered: the
+        # rest would be refused anyway, and their schemas are most of each request's tokens.
+        all_tools = [
+            t
+            for t in llm_tool_definitions()
+            if retriever is not None or t["function"]["name"] != "search_policies"
+        ]
         self.tools_unverified = [t for t in all_tools if t["function"]["name"] in UNVERIFIED_TOOLS]
         self.tools_verified = [t for t in all_tools if t["function"]["name"] != "verify_customer"]
         self._background: set[asyncio.Task] = set()
@@ -189,6 +201,7 @@ class Agent:
                 state=session.state,
                 conversation_id=session.conversation_id,
                 clock=self.clock,
+                retriever=self.retriever,
             )
             try:
                 try:

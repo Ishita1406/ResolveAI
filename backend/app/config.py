@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -7,6 +8,7 @@ from sqlalchemy.engine import URL
 
 # Repo-root .env for local runs; in Docker, compose injects the variables directly.
 ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+POLICY_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs" / "policies"
 
 
 class Settings(BaseSettings):
@@ -36,11 +38,27 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str | None = "low"
 
     # Agent loop
-    agent_prompt_version: str = "v2"
+    agent_prompt_version: str = "v3"
     agent_max_iterations: int = 6
     agent_turn_timeout_s: float = 30.0
     agent_history_turns: int = 10
     session_ttl_s: int = 3600
+
+    # Policy documents. "retrieval": the agent calls search_policies (hybrid search over
+    # ingested chunks). "full_text": every policy document goes into the system prompt.
+    policy_context_mode: Literal["retrieval", "full_text"] = "retrieval"
+    policy_docs_dir: Path = POLICY_DOCS_DIR
+    # Local ONNX model via fastembed; downloaded once into the cache dir. The vector column
+    # is 384-dimensional, so a model of another size needs a migration.
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    embedding_cache_dir: Path = Path.home() / ".cache" / "resolveai" / "fastembed"
+    # BGE's instruction for short queries against passages; "" embeds the query as is.
+    embedding_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    # What search_policies uses; vector and text exist for comparison (see evals/retrieval/).
+    retrieval_search_mode: Literal["hybrid", "vector", "text"] = "hybrid"
+    retrieval_top_k: int = 3  # passages returned to the agent
+    retrieval_candidates: int = 20  # per ranking, before fusion
+    retrieval_rrf_k: int = 60  # reciprocal rank fusion constant
 
     def database_url(self, driver: str = "postgresql+psycopg") -> URL:
         # URL.create (not a string) so passwords with special characters need no escaping,

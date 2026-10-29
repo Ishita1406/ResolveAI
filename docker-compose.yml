@@ -13,6 +13,16 @@ services:
     build: ./backend
     network_mode: host
     env_file: .env
+    environment:
+      # Paths inside the container (the build context is backend/ only).
+      POLICY_DOCS_DIR: /app/policies
+      EMBEDDING_CACHE_DIR: /home/app/.cache/resolveai/fastembed
+    volumes:
+      - ./docs/policies:/app/policies:ro
+      - embedding-models:/home/app/.cache/resolveai
     depends_on:
       redis:
         condition: service_healthy
+
+volumes:
+  embedding-models:

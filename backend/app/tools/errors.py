@@ -24,6 +24,7 @@ class ErrorCode(StrEnum):
     ACTION_NOT_CONFIRMED = "action_not_confirmed"
     CONFIRMATION_STALE = "confirmation_stale"
     ALREADY_DONE = "already_done"
+    SEARCH_UNAVAILABLE = "search_unavailable"
     INTERNAL_ERROR = "internal_error"
 
 

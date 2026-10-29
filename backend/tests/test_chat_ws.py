@@ -16,6 +16,7 @@ from app.main import create_app
 class FakeAgent:
     def __init__(self, *, hang: bool = False):
         self.store = InMemorySessionStore()
+        self.retriever = None
         self.hang = hang
         self.cancelled = threading.Event()
         self.received: list[tuple[str, str]] = []

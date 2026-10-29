@@ -21,6 +21,7 @@ EXPECTED_READ = {
     "get_shipment_status",
     "check_return_eligibility",
     "find_order_candidates",
+    "search_policies",
 }
 EXPECTED_WRITE = {
     "create_return",
@@ -53,9 +54,9 @@ def test_no_tool_accepts_customer_identity_or_amounts():
         assert not fields & {"customer_id", "amount", "amount_paise"}, spec.name
 
 
-def test_only_verify_and_escalate_skip_verification():
+def test_only_verify_escalate_and_policy_search_skip_verification():
     open_tools = {s.name for s in ALL_TOOLS.values() if not s.requires_verification}
-    assert open_tools == {"verify_customer", "escalate_to_human"}
+    assert open_tools == {"verify_customer", "escalate_to_human", "search_policies"}
 
 
 def test_llm_definitions_are_self_contained_and_strict():

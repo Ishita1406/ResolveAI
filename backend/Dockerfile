@@ -14,7 +14,8 @@ RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
 
-RUN useradd --create-home --uid 10001 app
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p /home/app/.cache/resolveai && chown -R app /home/app/.cache
 USER app
 
 EXPOSE 8000

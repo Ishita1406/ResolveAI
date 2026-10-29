@@ -2,6 +2,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +10,9 @@ from app.policy.audit import DecisionRecord
 from app.policy.config import get_policy
 from app.policy.state import PendingAction
 from app.tools.errors import ErrorCode, ToolFailure
+
+if TYPE_CHECKING:
+    from app.retrieval.search import PolicyRetriever
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,8 @@ class ToolContext:
     clock: Callable[[], datetime] = _utcnow
     rng: random.Random = field(default_factory=random.SystemRandom)
     pending_decisions: list[DecisionRecord] = field(default_factory=list)
+    # None when policy retrieval is off (policy text is then in the system prompt).
+    retriever: "PolicyRetriever | None" = None
 
     def now(self) -> datetime:
         return self.clock()

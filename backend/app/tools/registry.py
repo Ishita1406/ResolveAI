@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app.db.models import ToolInvocation
 from app.policy.audit import flush_decisions
 from app.policy.state import RUNNABLE_STATES, ActionState, args_hash
-from app.tools import read_tools, write_tools  # noqa: F401 - registers the tools
+from app.tools import policy_tools, read_tools, write_tools  # noqa: F401 - registers tools
 from app.tools.base import READ_TOOLS, WRITE_TOOLS, ToolKind, ToolSpec, WriteInput
 from app.tools.context import ToolCallRecord, ToolContext
 from app.tools.errors import ErrorCode, ToolError, ToolFailure, ToolResult

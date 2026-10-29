@@ -16,6 +16,7 @@ from app.agent.prompts import load_prompts
 from app.agent.session import InMemorySessionStore
 from app.db.seed import ANCHOR
 from app.policy.config import get_policy
+from app.retrieval.search import PolicyRetriever
 
 _ids = itertools.count(1)
 
@@ -85,15 +86,26 @@ def shared_session_factory(db: AsyncSession):
     return factory
 
 
-def make_agent(db: AsyncSession, llm: ScriptedLLM, **config: Any) -> Agent:
+def make_agent(
+    db: AsyncSession,
+    llm: ScriptedLLM,
+    *,
+    retriever: PolicyRetriever | None = None,
+    policy_documents: str | None = None,
+    **config: Any,
+) -> Agent:
+    """Prompts v2 (no policy section) unless a policy mode is given, which needs v3."""
+    with_policy = retriever is not None or policy_documents is not None
     return Agent(
         llm=llm,
         store=InMemorySessionStore(),
         db_factory=shared_session_factory(db),
-        prompts=load_prompts("v2"),
+        prompts=load_prompts("v3" if with_policy else "v2"),
         policy=get_policy(),
         config=AgentConfig(**config),
         clock=lambda: ANCHOR,
+        retriever=retriever,
+        policy_documents=policy_documents,
     )
 
 

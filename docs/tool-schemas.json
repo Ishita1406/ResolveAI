@@ -112,6 +112,28 @@
   {
     "type": "function",
     "function": {
+      "name": "search_policies",
+      "description": "[read-only] Search the store's policies (returns, refunds, shipping and delivery, damaged or wrong\nitems) for a general policy question. Returns the most relevant sections with their\nsource. Whether a specific order qualifies is decided by the order and action tools.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "description": "The policy question, in plain words.",
+            "maxLength": 300,
+            "minLength": 3,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "verify_customer",
       "description": "[read-only] Verify the caller with their registered phone number or email plus their account PIN code.\n\nMust succeed before any order details are shared or any action is taken. The same\nmessage is returned whether the account doesn't exist or the details don't match.\nAfter 3 failed attempts verification is locked for the rest of the call.",
       "parameters": {

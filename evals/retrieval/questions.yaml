@@ -1,0 +1,107 @@
+# Retrieval test set: 30 policy questions, each with the one section that answers it.
+#
+# - `section` is "<document>#<heading slug>", as produced by app.retrieval.chunking (the
+#   tests check every id exists, so a renamed heading fails loudly).
+# - Questions are worded as a customer would say them, mostly NOT reusing the heading's
+#   words, so vector and full-text search are both tested fairly.
+# - Written before any evaluation was run; don't tune them to the results.
+# - All 21 sections are covered; a few have two questions (different wording or facts).
+version: 1
+questions:
+  # damaged-items
+  - id: d1
+    question: My blender showed up with a cracked jug. Who do I tell, and how soon?
+    section: damaged-items#what-should-i-do-if-an-item-arrives-damaged-or-isnt-what-i-ordered
+  - id: d2
+    question: What information will you need from me about a defective product?
+    section: damaged-items#what-should-i-do-if-an-item-arrives-damaged-or-isnt-what-i-ordered
+  - id: d3
+    question: You sent me a blue kurta instead of the green one I ordered. What are my options?
+    section: damaged-items#what-can-i-get
+  - id: d4
+    question: Does a replacement for a damaged item cover my whole order or just that item?
+    section: damaged-items#what-can-i-get
+  - id: d5
+    question: The lamp arrived broken six weeks ago. Can I still get it replaced?
+    section: damaged-items#is-there-a-time-limit
+  - id: d6
+    question: Is there a maximum value for replacing a damaged TV?
+    section: damaged-items#are-there-limits
+  - id: d7
+    question: I already got my money back for the broken headphones. Can you also send new ones?
+    section: damaged-items#what-if-the-item-has-already-been-refunded
+
+  # refunds
+  - id: r1
+    question: In which situations do you give money back?
+    section: refunds#when-can-i-get-a-refund
+  - id: r2
+    question: Can I be refunded twice for the same thing?
+    section: refunds#when-can-i-get-a-refund
+  - id: r3
+    question: How many days until the refund shows up in my bank account?
+    section: refunds#how-will-i-be-refunded-and-when
+  - id: r4
+    question: Will the money go back to my card or come as store credit?
+    section: refunds#how-will-i-be-refunded-and-when
+  - id: r5
+    question: What's the most the assistant can refund on its own for one order?
+    section: refunds#are-there-limits-on-refunds
+  - id: r6
+    question: I've had several refunds this month. Is there a cap per customer?
+    section: refunds#are-there-limits-on-refunds
+  - id: r7
+    question: Can you give me some compensation as an apology for all the trouble?
+    section: refunds#goodwill-refunds
+  - id: r8
+    question: I cancelled before it shipped. Do I need to ask for my money back?
+    section: refunds#cancelled-orders
+
+  # returns
+  - id: t1
+    question: How many days do I have to send something back?
+    section: returns#how-long-do-i-have-to-return-an-item
+  - id: t2
+    question: Does the return period start from when I ordered or when it was delivered?
+    section: returns#how-long-do-i-have-to-return-an-item
+  - id: t3
+    question: What conditions does an item need to meet to be returnable?
+    section: returns#which-items-can-be-returned
+  - id: t4
+    question: Two items from my order came in different parcels. Does each have its own return deadline?
+    section: returns#which-items-can-be-returned
+  - id: t5
+    question: I just don't need the shoes anymore. Can I swap them for another pair?
+    section: returns#what-can-i-get-for-a-return
+  - id: t6
+    question: How much will I get back if I return one item from a bigger order?
+    section: returns#how-is-the-refund-worked-out
+  - id: t7
+    question: My order was cancelled. Can I still return it?
+    section: returns#cancelled-orders
+
+  # shipping
+  - id: s1
+    question: Is delivery free?
+    section: shipping#how-much-does-shipping-cost
+  - id: s2
+    question: What's the minimum order to avoid paying a delivery charge?
+    section: shipping#how-much-does-shipping-cost
+  - id: s3
+    question: Why did I only get half my order in today's package?
+    section: shipping#why-did-my-order-arrive-in-more-than-one-parcel
+  - id: s4
+    question: My package was due on Monday and still hasn't come. When is it considered lost?
+    section: shipping#my-parcel-is-late-when-does-it-count-as-missing
+  - id: s5
+    question: My order has no estimated delivery date and it's taking ages. Is it missing?
+    section: shipping#my-parcel-is-late-when-does-it-count-as-missing
+  - id: s6
+    question: The package never came. Can I get both a replacement and my money back?
+    section: shipping#what-can-i-get-if-my-parcel-is-missing
+  - id: s7
+    question: Tracking says delivered, but there's nothing at my door.
+    section: shipping#the-carrier-says-it-was-delivered-but-i-didnt-get-it
+  - id: s8
+    question: The courier couldn't deliver and is sending my parcel back to the warehouse. What happens now?
+    section: shipping#the-parcel-is-being-returned-to-us

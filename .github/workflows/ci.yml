@@ -37,6 +37,7 @@ jobs:
       POSTGRES_DB: resolveai
       TEST_POSTGRES_DB: resolveai_test
       REDIS_URL: redis://127.0.0.1:6379/0
+      EMBEDDING_CACHE_DIR: /home/runner/.cache/resolveai/fastembed
     defaults:
       run:
         working-directory: backend
@@ -46,6 +47,13 @@ jobs:
         with:
           version: "0.12.3"
       - run: uv sync --locked
+      # The embedding model (~65 MB) for the retrieval quality test; downloaded on a miss.
+      - uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/resolveai/fastembed
+          key: fastembed-bge-small-en-v1.5
+      - name: Fetch embedding model
+        run: uv run python -c "from app.retrieval.embedding import embedder_from_settings as e; e().embed_query('warm up')"
       - name: Lint
         run: uv run ruff check . && uv run ruff format --check .
       - name: Test

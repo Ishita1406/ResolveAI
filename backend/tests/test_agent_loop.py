@@ -9,10 +9,13 @@ from sqlalchemy import func, select
 
 from app.agent.llm import Completion, LLMError, TextDelta, ToolCall
 from app.agent.loop import CUSTOMER_TAG, wrap_customer_text
+from app.config import POLICY_DOCS_DIR
 from app.db.models import Conversation, ConversationTurn, Order, Refund, Ticket
 from app.db.seed import ANCHOR
 from app.policy.state import ActionState
 from app.repositories.customers import get_customer_by_email
+from app.retrieval.chunking import load_documents, policy_documents_text
+from app.retrieval.ingest import ingest
 from app.tools.registry import ALL_TOOLS
 from tests.agent_helpers import (
     Pause,
@@ -24,6 +27,7 @@ from tests.agent_helpers import (
     say,
     tokens,
 )
+from tests.retrieval_helpers import HashingEmbedder, make_retriever
 
 pytestmark = [pytest.mark.anyio, pytest.mark.db]
 
@@ -95,7 +99,8 @@ async def test_tools_offered_depend_on_verification_and_none_can_confirm(tx_db):
     verified_id = await verified(agent, tx_db, "rahul.verma@example.com")
     await run_turn(agent, verified_id, "hi")
     names = {t["function"]["name"] for t in llm.tools}
-    assert names == set(ALL_TOOLS) - {"verify_customer"}
+    # No retriever: policy search isn't offered (see the policy-mode tests below).
+    assert names == set(ALL_TOOLS) - {"verify_customer", "search_policies"}
     assert not any("confirm" in n or "execute" in n for n in names)
     for t in llm.tools:
         assert "idempotency_key" not in t["function"]["parameters"]["properties"]
@@ -660,3 +665,39 @@ async def test_reply_cut_at_the_token_cap_is_asked_for_once_only(tx_db):
     assert len(llm.calls) == 2
     assert tokens(events) == "Your order is Your order is"
     assert of_type(events, "done")[0].outcome == "completed"
+
+
+# --- policy context modes -------------------------------------------------------------------
+
+
+async def test_retrieval_mode_offers_policy_search_before_verification(tx_db):
+    await ingest(tx_db, HashingEmbedder(), load_documents(POLICY_DOCS_DIR))
+    llm = ScriptedLLM(
+        call("search_policies", query="how much is shipping"),
+        say("Under our shipping policy, shipping is free on orders of ₹499 or more."),
+    )  # fmt: skip
+    agent = make_agent(tx_db, llm, retriever=make_retriever())
+    session = await agent.start_session()
+    events = await run_turn(agent, session.session_id, "do you charge for shipping?")
+
+    assert {t["function"]["name"] for t in llm.tools} == {
+        "verify_customer", "escalate_to_human", "search_policies"}  # fmt: skip
+    system = llm.last_messages()[0]["content"]
+    assert "call search_policies" in system and "<policy_documents>" not in system
+    (result,) = tool_messages(llm.last_messages())
+    sources = [p["source"] for p in result["data"]["passages"]]
+    assert "Shipping and delivery policy: How much does shipping cost?" in sources
+    assert of_type(events, "done")[0].outcome == "completed"
+
+
+async def test_full_text_mode_puts_the_policies_in_the_prompt(tx_db):
+    llm = ScriptedLLM(say("Under our returns policy, you have 30 days."))
+    documents = policy_documents_text(POLICY_DOCS_DIR)
+    agent = make_agent(tx_db, llm, policy_documents=documents)
+    session = await agent.start_session()
+    await run_turn(agent, session.session_id, "how long do I have to return something?")
+
+    system = llm.last_messages()[0]["content"]
+    assert f"<policy_documents>\n{documents}\n</policy_documents>" in system
+    assert "search_policies" not in system
+    assert "search_policies" not in {t["function"]["name"] for t in llm.tools}

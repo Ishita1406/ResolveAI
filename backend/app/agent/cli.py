@@ -87,6 +87,8 @@ async def main(argv: list[str] | None = None) -> int:
         return 2
     if args.memory:
         agent.store = InMemorySessionStore()
+    if agent.retriever is not None:
+        await agent.retriever.embedder.warm()
     try:
         session = await agent.store.load(args.session) if args.session else None
         if session is None:

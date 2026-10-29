@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval
 
 up:
 	docker compose up -d --build
@@ -29,3 +29,11 @@ tool-schemas:
 
 chat:
 	cd backend && uv run python -m app.agent.cli
+
+# Embed docs/policies/*.md into policy_chunks (first run downloads the embedding model).
+ingest-policies:
+	cd backend && uv run python -m app.retrieval.ingest
+
+# Recall@1/3/5 and MRR for vector, full-text and hybrid search; writes the report.
+eval-retrieval:
+	cd backend && uv run python -m app.retrieval.evaluate --output ../evals/retrieval/results.md
