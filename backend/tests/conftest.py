@@ -12,6 +12,8 @@ from sqlalchemy.pool import NullPool
 
 from app.config import Settings, get_settings
 from app.db.seed import build_dataset, write_dataset
+from app.tools.context import ToolContext
+from tests.tool_helpers import make_ctx
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -78,3 +80,27 @@ async def db_session(test_db_settings: Settings) -> AsyncIterator[AsyncSession]:
         yield session
         await session.rollback()
     await engine.dispose()
+
+
+@pytest.fixture
+async def tx_db(test_db_settings: Settings) -> AsyncIterator[AsyncSession]:
+    """Session inside an outer transaction that is always rolled back.
+
+    Tools call commit()/rollback(); in create_savepoint mode those only end a savepoint,
+    so write tools behave normally yet leave the seeded test database unchanged.
+    """
+    engine = create_async_engine(test_db_settings.database_url(), poolclass=NullPool)
+    async with engine.connect() as conn:
+        outer = await conn.begin()
+        session = AsyncSession(bind=conn, join_transaction_mode="create_savepoint")
+        try:
+            yield session
+        finally:
+            await session.close()
+            await outer.rollback()
+    await engine.dispose()
+
+
+@pytest.fixture
+def ctx(tx_db: AsyncSession) -> ToolContext:
+    return make_ctx(tx_db)

@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import (
@@ -101,6 +102,8 @@ class Order(Base):
     total_paise: Mapped[int] = mapped_column(BigInteger)
     placed_at: Mapped[datetime]
     cancelled_at: Mapped[datetime | None]
+    # Set on replacement orders created by a reshipment.
+    replaces_order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
 
     customer: Mapped[Customer] = relationship(back_populates="orders", lazy="raise")
     items: Mapped[list["OrderItem"]] = relationship(
@@ -297,9 +300,27 @@ class Ticket(Base):
     status: Mapped[TicketStatus] = mapped_column(str_enum(TicketStatus, "ticket_status"))
     priority: Mapped[TicketPriority] = mapped_column(str_enum(TicketPriority, "ticket_priority"))
     summary: Mapped[str] = mapped_column(Text)
+    # Structured handoff payload for escalations (reason, customer context, actions attempted).
+    details: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
 
     customer: Mapped[Customer | None] = relationship(lazy="raise")
     order: Mapped[Order | None] = relationship(lazy="raise")
     conversation: Mapped[Conversation | None] = relationship(lazy="raise")
+
+
+class ToolInvocation(Base):
+    """Idempotency ledger for write tools: one row per key, holding the original result."""
+
+    __tablename__ = "tool_invocations"
+
+    id: Mapped[int] = pk()
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
+    tool_name: Mapped[str] = mapped_column(String(64))
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"))
+    # sha256 of the canonical arguments; a reused key with different arguments is rejected.
+    request_hash: Mapped[str] = mapped_column(String(64))
+    response: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = created_at()

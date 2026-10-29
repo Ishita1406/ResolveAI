@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed
+.PHONY: up down test lint format migrate seed reseed tool-schemas
 
 up:
 	docker compose up -d --build
@@ -23,3 +23,6 @@ seed:
 
 reseed:
 	cd backend && uv run python -m app.db.seed --reset
+
+tool-schemas:
+	cd backend && uv run python -m app.tools.schema > ../docs/tool-schemas.json

@@ -33,9 +33,13 @@ async def get_order_by_number(session: AsyncSession, order_number: str) -> Order
 
 
 async def get_order_for_customer(
-    session: AsyncSession, customer_id: int, order_number: str
+    session: AsyncSession, customer_id: int, order_number: str, *, for_update: bool = False
 ) -> Order | None:
-    """Ownership-scoped lookup: another customer's order is indistinguishable from none."""
+    """Ownership-scoped lookup: another customer's order is indistinguishable from none.
+
+    for_update locks the order row until the transaction ends and refreshes any copy already
+    in the session, so write paths re-check eligibility against current data.
+    """
     stmt = (
         select(Order)
         .where(
@@ -44,6 +48,8 @@ async def get_order_for_customer(
         )
         .options(*_ORDER_DETAIL)
     )
+    if for_update:
+        stmt = stmt.with_for_update(of=Order).execution_options(populate_existing=True)
     return await session.scalar(stmt)
 
 

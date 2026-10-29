@@ -1,0 +1,436 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "check_return_eligibility",
+      "description": "[read-only] Check whether items on the verified customer's order can be returned, and for how much.\n\nDecided by policy code (return window, delivery, prior returns and refunds). An\neligible item may still need a specialist to approve its refund (refund_requires_human).",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "description": "Item SKU from get_order.",
+                "pattern": "^[A-Z0-9-]{3,32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Check one item; omit to check every item.",
+            "title": "Sku"
+          }
+        },
+        "required": [
+          "order_number"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "find_order_candidates",
+      "description": "[read-only] Match a possibly misheard order number against the verified customer's own orders.\n\nReturns up to 3 candidates, best first, with item names to help disambiguate. Read the\nchosen number back to the caller before acting on it, even for an exact match.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "heard": {
+            "description": "The order number exactly as heard, e.g. \"fifteen eighty\" or \"VX 158\".",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Heard",
+            "type": "string"
+          }
+        },
+        "required": [
+          "heard"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_order",
+      "description": "[read-only] Get one of the verified customer's orders: items, amounts, returns and refunds.\n\nAmounts are integer paise (₹1 = 100 paise); *_display fields are ready to speak.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_number"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_shipment_status",
+      "description": "[read-only] Get delivery status for one of the verified customer's orders.\n\nReturns every shipment (an order can ship in parts) with carrier scans, ETA and an\noverdue flag, plus any items that haven't shipped yet.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_number"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_recent_orders",
+      "description": "[read-only] List the verified customer's most recent orders, newest first.\n\nUse when the caller doesn't know their order number or has several orders in flight.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 5,
+            "description": "How many orders to return, newest first.",
+            "maximum": 10,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "verify_customer",
+      "description": "[read-only] Verify the caller with their registered phone number or email plus their account PIN code.\n\nMust succeed before any order details are shared or any action is taken. The same\nmessage is returned whether the account doesn't exist or the details don't match.\nAfter 3 failed attempts verification is locked for the rest of the call.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered mobile number as the caller said it.",
+            "title": "Phone"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Registered email address.",
+            "title": "Email"
+          },
+          "postal_code": {
+            "description": "6-digit PIN code of the account address.",
+            "pattern": "^[0-9]{6}$",
+            "title": "Postal Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "postal_code"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_return",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Open a return for one item on the verified customer's order.\n\nOnly after the customer has confirmed. Fails with not_eligible if policy forbids it.\nThis does not refund; call issue_refund (reason \"return\") afterwards if appropriate.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          },
+          "sku": {
+            "description": "Item SKU from get_order.",
+            "pattern": "^[A-Z0-9-]{3,32}$",
+            "title": "Sku",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "damaged",
+              "wrong_item",
+              "not_as_described",
+              "no_longer_needed"
+            ],
+            "title": "ReturnReason",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Caller's description, if any.",
+            "title": "Notes"
+          }
+        },
+        "required": [
+          "order_number",
+          "sku",
+          "reason"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_ticket",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Open a support ticket for follow-up by the support team, for the verified customer.\n\nUse when an issue can't be resolved in the call but doesn't need a live handoff.\nFails with ticket_already_open if the same order already has an open ticket of this kind.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "missing_delivery",
+              "damaged_product",
+              "return_refund",
+              "order_status",
+              "other"
+            ],
+            "title": "TicketCategory",
+            "type": "string"
+          },
+          "summary": {
+            "description": "What the customer needs.",
+            "maxLength": 1000,
+            "minLength": 10,
+            "title": "Summary",
+            "type": "string"
+          },
+          "order_number": {
+            "anyOf": [
+              {
+                "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+                "pattern": "^VX-[0-9]{4}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Order Number"
+          },
+          "priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high"
+            ],
+            "title": "TicketPriority",
+            "type": "string",
+            "default": "normal"
+          }
+        },
+        "required": [
+          "category",
+          "summary"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "escalate_to_human",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Hand the call to a human agent with a structured summary. Works before verification.\n\nUse when the customer asks for a person, policy requires review, verification fails,\nthe request keeps being misunderstood, a tool keeps failing, or you aren't confident.\nThe tools already called in this session are attached automatically.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": [
+              "customer_requested",
+              "policy_requires_review",
+              "verification_failed",
+              "repeated_misunderstanding",
+              "tool_failure",
+              "low_confidence"
+            ],
+            "title": "EscalationReason",
+            "type": "string"
+          },
+          "summary": {
+            "description": "The issue and what has been tried so far.",
+            "maxLength": 2000,
+            "minLength": 10,
+            "title": "Summary",
+            "type": "string"
+          },
+          "order_number": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Order the caller mentioned, verified or not.",
+            "title": "Order Number"
+          },
+          "category": {
+            "enum": [
+              "missing_delivery",
+              "damaged_product",
+              "return_refund",
+              "order_status",
+              "other"
+            ],
+            "title": "TicketCategory",
+            "type": "string",
+            "default": "other"
+          }
+        },
+        "required": [
+          "reason",
+          "summary"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "issue_refund",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Refund the verified customer for a return or a missing delivery.\n\nOnly after the customer has confirmed the amount from check_return_eligibility or\nget_order. The amount is computed by the backend and capped at what's still refundable.\nRefunds above the automatic limit, goodwill refunds and parcels the carrier marked\ndelivered fail with requires_human.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "return",
+              "missing_delivery",
+              "goodwill"
+            ],
+            "title": "RefundRequestReason",
+            "type": "string"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "description": "Item SKU from get_order.",
+                "pattern": "^[A-Z0-9-]{3,32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Refund one item. Required for reason \"return\"; omit for whole order.",
+            "title": "Sku"
+          }
+        },
+        "required": [
+          "order_number",
+          "reason"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "reship_order",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Send a free replacement for a lost or badly overdue parcel on the verified customer's order.\n\nOnly after the customer has chosen a reshipment over a refund and confirmed. Creates a\nnew order at no charge. Parcels the carrier marked delivered fail with requires_human.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "order_number": {
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "title": "Order Number",
+            "type": "string"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "description": "Item SKU from get_order.",
+                "pattern": "^[A-Z0-9-]{3,32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Reship one item; omit to reship every item.",
+            "title": "Sku"
+          }
+        },
+        "required": [
+          "order_number"
+        ],
+        "type": "object"
+      }
+    }
+  }
+]

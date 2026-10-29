@@ -98,3 +98,12 @@ class TurnRole(StrEnum):
     ASSISTANT = "assistant"
     TOOL = "tool"
     SYSTEM = "system"
+
+
+class EscalationReason(StrEnum):
+    CUSTOMER_REQUESTED = "customer_requested"
+    POLICY_REQUIRES_REVIEW = "policy_requires_review"
+    VERIFICATION_FAILED = "verification_failed"
+    REPEATED_MISUNDERSTANDING = "repeated_misunderstanding"
+    TOOL_FAILURE = "tool_failure"
+    LOW_CONFIDENCE = "low_confidence"
