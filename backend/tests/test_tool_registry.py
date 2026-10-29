@@ -152,3 +152,15 @@ async def test_spoken_style_order_number_is_normalized(no_db_ctx):
     # Normalization succeeds, so the call proceeds to the verification gate.
     result = await call_tool(no_db_ctx, "get_order", {"order_number": " vx 1508 "})
     assert result.error.code is ErrorCode.NOT_VERIFIED
+
+
+@pytest.mark.parametrize(
+    "raw", ["VX-8015", "vx 8015", "8015", "VX\u20118015", "VX\u20138015", "VX\u20148015"]
+)
+def test_order_number_accepts_typographic_dashes(raw):
+    from app.tools.write_tools import IssueRefundInput
+
+    args = IssueRefundInput.model_validate(
+        {"order_number": raw, "reason": "missing_delivery", "idempotency_key": "k" * 16}
+    )
+    assert args.order_number == "VX-8015"

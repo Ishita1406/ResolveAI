@@ -11,12 +11,15 @@ The idempotency key is minted here, once per action, so retrying execute() can n
 repeat the write.
 """
 
+import json
 import uuid
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select
 
-from app.domain.enums import RefundRequestReason
+from app.db.models import ToolInvocation
+from app.domain.enums import EscalationReason, RefundRequestReason
 from app.domain.formatting import format_inr
 from app.policy.audit import Stage, flush_decisions
 from app.policy.config import get_policy
@@ -109,7 +112,8 @@ def _readback(tool: str, args: Any, order, decision: PolicyDecision) -> str:
                 RefundRequestReason.MISSING_DELIVERY: "missing delivery",
                 RefundRequestReason.GOODWILL: "goodwill",
             }[args.reason]
-            return f"refund {amount} to your original payment method for {what} ({why})"
+            how_much = f"{amount} " if amount else ""
+            return f"refund {how_much}to your original payment method for {what} ({why})"
         case "reship_order":
             items = [find_item(order, args.sku)] if args.sku else order.items
             names = ", ".join(i.product_name for i in items)
@@ -152,6 +156,16 @@ async def propose(ctx: ToolContext, tool: str, arguments: dict[str, Any]) -> Act
 
     try:
         order = await resolve_order(ctx, tool, args)
+        done = _executed_twin(ctx, tool, args, order)
+        if done is not None:
+            await ctx.db.rollback()
+            return _fail(
+                ErrorCode.ALREADY_DONE,
+                "That's already been done.",
+                f"This was already executed in this conversation: {done.summary!r}, result "
+                f"{json.dumps(done.result, default=str)}. Don't propose it again; tell the "
+                "customer it's done.",
+            )
         decision, _ = await evaluate(
             ctx, tool, args, order, stage=Stage.PROPOSAL, action_id=action_id
         )
@@ -182,6 +196,25 @@ async def propose(ctx: ToolContext, tool: str, arguments: dict[str, Any]) -> Act
         return ActionResult(ok=False, action=view(action), error=policy_failure(decision).error)
     action.transition(ActionState.AWAITING_CONFIRMATION, at=now, turn=turn)
     return ActionResult(ok=True, action=view(action))
+
+
+def _executed_twin(ctx: ToolContext, tool: str, args: Any, order) -> PendingAction | None:
+    """An already executed action for the same tool, order and item, if any.
+
+    The model sometimes re-proposes an action right after it ran; that is a repeat, not a new
+    request, and must not reach the policy engine (which would reject it as a second refund).
+    """
+    order_number = order.order_number if order else None
+    sku = getattr(args, "sku", None)
+    for action in ctx.state.actions.values():
+        if (
+            action.state is ActionState.EXECUTED
+            and action.tool == tool
+            and action.arguments.get("order_number") == order_number
+            and action.arguments.get("sku") == sku
+        ):
+            return action
+    return None
 
 
 def _get(ctx: ToolContext, action_id: str) -> PendingAction | None:
@@ -253,3 +286,54 @@ async def execute(ctx: ToolContext, action_id: str) -> ActionResult:
         )
     result = await call_tool(ctx, action.tool, action.arguments)
     return ActionResult(ok=result.ok, action=view(action), error=result.error, tool_result=result)
+
+
+async def escalate_now(
+    ctx: ToolContext,
+    *,
+    reason: EscalationReason,
+    issue: str,
+    order_number: str | None = None,
+    note: str = "system",
+) -> ActionResult:
+    """System-initiated handoff (turn timeout, iteration limit, model failure).
+
+    The only write the system may confirm itself: a handoff moves no money and can't harm
+    the customer, and it must work when the model can't be relied on. It still goes through
+    the PolicyEngine, the ledger and the audit log like any other action.
+    """
+    proposed = await propose(
+        ctx,
+        "escalate_to_human",
+        {"reason": reason, "summary": issue, "order_number": order_number},
+    )
+    if not proposed.ok or proposed.action is None:
+        return proposed
+    action = ctx.state.actions[proposed.action.action_id]
+    action.transition(ActionState.CONFIRMED, at=ctx.now(), turn=ctx.state.turn, note=note)
+    return await execute(ctx, action.id)
+
+
+async def reconcile(ctx: ToolContext) -> list[ActionView]:
+    """Mark confirmed actions whose write already committed as executed.
+
+    Covers a process that died after the write's commit but before the session was saved.
+    A confirmed action with no ledger row is left confirmed: it never ran.
+    """
+    settled = []
+    for action in ctx.state.actions.values():
+        if action.state is not ActionState.CONFIRMED:
+            continue
+        response = await ctx.db.scalar(
+            select(ToolInvocation.response).where(
+                ToolInvocation.idempotency_key == action.idempotency_key
+            )
+        )
+        if response is not None:
+            action.transition(
+                ActionState.EXECUTED, at=ctx.now(), turn=ctx.state.turn, note="reconciled"
+            )
+            action.result = response
+            settled.append(view(action))
+    await ctx.db.rollback()
+    return settled

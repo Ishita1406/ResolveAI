@@ -38,9 +38,29 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     return resolve(schema)
 
 
+def _compact(node: Any) -> Any:
+    """Fewer tokens per request: drop generated titles, and write an optional field as its
+    plain type (anyOf [X, null] with default null) since optional just means not required."""
+    if isinstance(node, list):
+        return [_compact(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    node = {k: _compact(v) for k, v in node.items() if k != "title"}
+    variants = node.get("anyOf")
+    if (
+        isinstance(variants, list)
+        and len(variants) == 2
+        and {"type": "null"} in variants
+        and node.get("default", None) is None
+    ):
+        (inner,) = [v for v in variants if v != {"type": "null"}]
+        rest = {k: v for k, v in node.items() if k not in ("anyOf", "default")}
+        node = {**inner, **rest}
+    return node
+
+
 def parameters_schema(spec: ToolSpec, *, include_idempotency_key: bool = False) -> dict[str, Any]:
-    schema = _inline_refs(spec.input_model.model_json_schema())
-    schema.pop("title", None)
+    schema = _compact(_inline_refs(spec.input_model.model_json_schema()))
     if not include_idempotency_key:
         schema.get("properties", {}).pop("idempotency_key", None)
         required = [r for r in schema.get("required", []) if r != "idempotency_key"]

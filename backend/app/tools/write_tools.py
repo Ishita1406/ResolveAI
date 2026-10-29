@@ -326,14 +326,37 @@ class ActionAttempt(BaseModel):
     at: str
 
 
+class HandoffCustomer(BaseModel):
+    id: int
+    name: str
+
+
 class Handoff(BaseModel):
+    """What the human agent sees first: why, who, which order, what's wrong, what was tried."""
+
     reason: EscalationReason
-    summary: str
+    customer: HandoffCustomer | None = Field(description="Set only if verified.")
     verified: bool
-    customer_name: str | None
     order_number: str | None = Field(description="Set only if verified and owned by the caller.")
     caller_order_reference: str | None = Field(description="Unverified reference, as given.")
+    issue: str
+    steps_taken: list[str] = Field(description="Tool calls and proposals, oldest first.")
     actions_attempted: list[ActionAttempt]
+
+
+def _steps_taken(ctx: ToolContext, *, exclude_key: str) -> list[str]:
+    """Tool calls and proposals, oldest first, leaving out the escalation in progress."""
+    steps = [
+        (h.at, f"{h.tool}: {'succeeded' if h.ok else f'failed ({h.error_code})'}")
+        for h in ctx.state.history
+    ]
+    for action in ctx.state.actions.values():
+        if action.idempotency_key == exclude_key:
+            continue
+        last = action.history[-1] if action.history else None
+        detail = f" ({last.note})" if last and last.note else ""
+        steps.append((action.proposed_at, f"proposed: {action.summary} -> {action.state}{detail}"))
+    return [text for _, text in sorted(steps, key=lambda s: s[0])]
 
 
 class EscalateToHumanOutput(ToolOutput):
@@ -357,13 +380,19 @@ async def escalate_to_human(ctx: ToolContext, args: EscalateToHumanInput) -> Esc
             order = await load_owned_order(ctx, args.order_number)
         except ToolFailure:
             order = None  # keep the caller's reference; an escalation must not fail on it
+    customer = (
+        HandoffCustomer(id=state.customer_id, name=state.customer_name or "")
+        if state.customer_id is not None
+        else None
+    )
     handoff = Handoff(
         reason=args.reason,
-        summary=args.summary,
+        customer=customer,
         verified=state.is_verified,
-        customer_name=state.customer_name,
         order_number=order.order_number if order else None,
         caller_order_reference=None if order else args.order_number,
+        issue=args.summary,
+        steps_taken=_steps_taken(ctx, exclude_key=args.idempotency_key),
         actions_attempted=[
             ActionAttempt(tool=h.tool, ok=h.ok, error_code=h.error_code, at=h.at.isoformat())
             for h in state.history

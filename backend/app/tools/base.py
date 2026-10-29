@@ -17,7 +17,8 @@ class ToolKind(StrEnum):
 
 def _normalize_order_number(value: Any) -> Any:
     if isinstance(value, str):
-        m = re.fullmatch(r"\s*(?:vx)?[\s-]*(\d{4})\s*", value, re.IGNORECASE)
+        # Models often write U+2010-2014 dashes ("VX\u20118015") instead of an ASCII hyphen.
+        m = re.fullmatch(r"\s*(?:vx)?[\s\-\u2010-\u2014]*(\d{4})\s*", value, re.IGNORECASE)
         if m:
             return f"VX-{m.group(1)}"
     return value

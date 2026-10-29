@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from app.db.models import Order, PolicyDecisionLog, Refund
 from app.db.seed import ANCHOR
-from app.domain.enums import RefundReason, RefundStatus
+from app.domain.enums import EscalationReason, RefundReason, RefundStatus
 from app.policy import gate
 from app.policy.config import get_policy
 from app.policy.facts import customer_refunds_in_window_paise
@@ -238,3 +238,71 @@ async def test_customer_refund_window_boundary(ctx):
                           requested_at=at))  # fmt: skip
     await ctx.db.flush()
     assert await customer_refunds_in_window_paise(ctx.db, rahul, ANCHOR) == 100
+
+
+# --- system escalation and reconciliation ---------------------------------------------------
+
+
+async def test_system_escalation_needs_no_customer_confirmation(ctx):
+    result = await gate.escalate_now(
+        ctx, reason=EscalationReason.TOOL_FAILURE, issue="The turn timed out.", note="system: test"
+    )
+    assert result.ok and result.action.state is ActionState.EXECUTED
+    stored = ctx.state.actions[result.action.action_id]
+    assert stored.history[1].note == "system: test"
+    assert result.tool_result.data["handoff"]["reason"] == "tool_failure"
+    assert await _decisions(ctx, stored.id) == [
+        ("proposal", "approve", "escalation.always_allowed"),
+        ("execution", "approve", "escalation.always_allowed"),
+    ]
+
+
+async def test_reconcile_marks_committed_writes_executed(ctx):
+    action = await _propose_refund(ctx)
+    gate.register_customer_turn(ctx)
+    gate.confirm(ctx, action.action_id)
+    await gate.execute(ctx, action.action_id)
+    stored = ctx.state.actions[action.action_id]
+    # Simulate a crash after the write committed but before the session was saved.
+    stored.state, stored.result = ActionState.CONFIRMED, None
+    settled = await gate.reconcile(ctx)
+    assert [a.action_id for a in settled] == [action.action_id]
+    assert stored.state is ActionState.EXECUTED and stored.result["amount_paise"] == 3_499_00
+    assert stored.history[-1].note == "reconciled"
+
+
+async def test_reconcile_leaves_unstarted_confirmed_actions_alone(ctx):
+    action = await _propose_refund(ctx)
+    gate.register_customer_turn(ctx)
+    gate.confirm(ctx, action.action_id)
+    assert await gate.reconcile(ctx) == []
+    assert ctx.state.actions[action.action_id].state is ActionState.CONFIRMED
+
+
+async def test_repeat_of_an_executed_action_is_already_done_not_rejected(ctx):
+    action = await _propose_refund(ctx)
+    gate.register_customer_turn(ctx)
+    gate.confirm(ctx, action.action_id)
+    assert (await gate.execute(ctx, action.action_id)).ok
+
+    again = await gate.propose(ctx, "issue_refund", {**REFUND_8015, "order_number": "VX\u20118015"})
+    assert again.error.code is ErrorCode.ALREADY_DONE and again.action is None
+    assert "Don't propose it again" in again.error.hint
+    assert [a.state for a in ctx.state.actions.values()] == [ActionState.EXECUTED]
+    # A different action on the same order is a new request.
+    ticket = await gate.propose(ctx, "create_ticket", {
+        "category": "missing_delivery", "order_number": "VX-8015",
+        "summary": "The courier never called before marking it lost."})  # fmt: skip
+    assert ticket.ok, ticket.error
+
+
+def test_refund_read_back_without_an_amount_does_not_say_none():
+    from types import SimpleNamespace
+
+    from app.policy.engine import PolicyDecision, Verdict
+
+    args = SimpleNamespace(sku=None, reason="missing_delivery")
+    order = SimpleNamespace(order_number="VX-8015")
+    decision = PolicyDecision(verdict=Verdict.REJECT, rule="x", reason=None, message="")
+    summary = gate._readback("issue_refund", args, order, decision)
+    assert summary == "refund to your original payment method for order VX-8015 (missing delivery)"

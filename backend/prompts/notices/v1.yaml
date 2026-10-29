@@ -1,0 +1,17 @@
+# System notices injected into the conversation. Versioned with the prompts.
+name: notices
+version: v1
+description: Fixed texts for state changes and fallbacks. $placeholders are filled in by code.
+texts:
+  verified: "verified as $first_name"
+  not_verified: "not verified"
+  no_pending_action: "none"
+  pending_action: "\"$summary\" (amount $amount)"
+  executed: "The customer said yes, and the action \"$summary\" was executed. Result: $result. Tell the customer it is done and give them the reference."
+  execution_failed: "The customer said yes, but the action \"$summary\" could not be completed: $message. Explain this to the customer."
+  cancelled_by_customer: "The customer said no to \"$summary\". It was cancelled. Ask how else you can help."
+  expired: "The proposal \"$summary\" expired before the customer confirmed it. If they still want it, propose it again."
+  proposal_created: "Proposal created. Read this back to the customer and ask them to confirm: $read_back"
+  # Spoken directly (no model involved) when a turn fails and the call is handed over.
+  fallback_escalated: "I'm sorry, I'm having trouble with this. I've passed it to a colleague who will follow up, and your reference is $reference."
+  fallback_failed: "I'm sorry, I'm having trouble with this right now. Please try again in a few minutes."

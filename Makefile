@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat
 
 up:
 	docker compose up -d --build
@@ -26,3 +26,6 @@ reseed:
 
 tool-schemas:
 	cd backend && uv run python -m app.tools.schema > ../docs/tool-schemas.json
+
+chat:
+	cd backend && uv run python -m app.agent.cli

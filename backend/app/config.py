@@ -26,6 +26,22 @@ class Settings(BaseSettings):
 
     health_check_timeout_s: float = 2.0
 
+    # LLM (Groq, OpenAI-compatible chat completions). No key means the agent is disabled.
+    groq_api_key: SecretStr | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_model: str = "openai/gpt-oss-120b"
+    llm_temperature: float = 0.2
+    llm_request_timeout_s: float = 20.0
+    llm_max_completion_tokens: int = 400
+    llm_reasoning_effort: str | None = "low"
+
+    # Agent loop
+    agent_prompt_version: str = "v2"
+    agent_max_iterations: int = 6
+    agent_turn_timeout_s: float = 30.0
+    agent_history_turns: int = 10
+    session_ttl_s: int = 3600
+
     def database_url(self, driver: str = "postgresql+psycopg") -> URL:
         # URL.create (not a string) so passwords with special characters need no escaping,
         # and a host starting with "/" is passed through to libpq as a Unix socket directory.

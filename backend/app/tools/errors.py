@@ -23,6 +23,7 @@ class ErrorCode(StrEnum):
     ACTION_NOT_PENDING = "action_not_pending"
     ACTION_NOT_CONFIRMED = "action_not_confirmed"
     CONFIRMATION_STALE = "confirmation_stale"
+    ALREADY_DONE = "already_done"
     INTERNAL_ERROR = "internal_error"
 
 

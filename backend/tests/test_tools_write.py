@@ -33,6 +33,11 @@ async def count(ctx, model, *where):
 # --- create_return --------------------------------------------------------------------------
 
 
+def forget_session_actions(ctx):
+    """As on a later call: the policy, not this session's memory, must refuse the repeat."""
+    ctx.state.actions.clear()
+
+
 async def test_create_return_and_replay(ctx):
     await verify_as(ctx, "neha.gupta@example.com")
     data = await ok(ctx, "create_return", order_number="VX-4411", sku="TSH-BLK-M",
@@ -124,6 +129,7 @@ async def test_second_return_for_same_item_is_refused(ctx):
     await verify_as(ctx, "neha.gupta@example.com")
     args = {"order_number": "VX-4411", "sku": "TSH-BLK-M", "reason": "damaged"}
     await ok(ctx, "create_return", **args)
+    forget_session_actions(ctx)
     error = await err(ctx, "create_return", **args)
     assert error.details["reason"] == "already_returned"
 
@@ -153,6 +159,7 @@ async def test_refund_after_return_is_idempotent_and_single(ctx):
     assert replay.tool_result.replayed and replay.tool_result.data == data
     assert await count(ctx, Refund, Refund.idempotency_key == key) == 1
 
+    forget_session_actions(ctx)
     retry = await err(ctx, "issue_refund", **args)  # a new action cannot refund twice
     assert retry.details["reason"] == "already_refunded"
 
@@ -242,10 +249,12 @@ async def test_reship_creates_free_replacement_once(ctx):
 
     replay = await gate.execute(ctx, last_action(ctx).id)
     assert replay.tool_result.data["replacement_order_number"] == number
+    forget_session_actions(ctx)
     again = await err(ctx, "reship_order", order_number="VX-8015", issue="missing_delivery")
     assert again.details["reason"] == "already_resolved"
     refund = await err(ctx, "issue_refund", order_number="VX-8015", reason="missing_delivery")
     assert refund.details["reason"] == "already_resolved"
+    assert "no refund or replacement is available" in refund.hint
 
 
 async def test_reship_damaged_item_inside_window(ctx):
@@ -302,9 +311,11 @@ async def test_escalation_works_unverified_and_records_attempts(ctx):
                     summary="Caller could not verify; asked about an order.",
                     order_number="thirteen fifty")  # fmt: skip
     handoff = data["handoff"]
-    assert (handoff["verified"], handoff["customer_name"], handoff["order_number"]) == (
+    assert (handoff["verified"], handoff["customer"], handoff["order_number"]) == (
         False, None, None
     )  # fmt: skip
+    assert handoff["issue"] == "Caller could not verify; asked about an order."
+    assert handoff["steps_taken"] == ["verify_customer: failed (verification_failed)"]
     assert handoff["caller_order_reference"] == "thirteen fifty"
     assert [(a["tool"], a["error_code"]) for a in handoff["actions_attempted"]] == [
         ("verify_customer", "verification_failed")
@@ -332,6 +343,9 @@ async def test_escalation_links_own_order_and_lists_attempts(ctx):
                     summary="Damaged laptop; refund above automatic limit.",
                     order_number="VX-7302", category="damaged_product")  # fmt: skip
     handoff = data["handoff"]
-    assert (handoff["verified"], handoff["customer_name"]) == (True, "Arjun Malhotra")
+    assert handoff["verified"] is True
+    assert handoff["customer"]["name"] == "Arjun Malhotra"
     assert handoff["order_number"] == "VX-7302"
+    assert any(s.startswith("proposed: start a return for the ProBook 16 laptop")
+               and s.endswith("-> executed") for s in handoff["steps_taken"])  # fmt: skip
     assert [a["tool"] for a in handoff["actions_attempted"]] == ["verify_customer", "create_return"]

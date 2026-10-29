@@ -10,23 +10,12 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           },
           "sku": {
-            "anyOf": [
-              {
-                "description": "Item SKU from get_order.",
-                "pattern": "^[A-Z0-9-]{3,32}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
             "description": "Check one item; omit to check every item.",
-            "title": "Sku"
+            "pattern": "^[A-Z0-9-]{3,32}$",
+            "type": "string"
           }
         },
         "required": [
@@ -48,7 +37,6 @@
             "description": "The order number exactly as heard, e.g. \"fifteen eighty\" or \"VX 158\".",
             "maxLength": 80,
             "minLength": 1,
-            "title": "Heard",
             "type": "string"
           }
         },
@@ -70,7 +58,6 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           }
         },
@@ -92,7 +79,6 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           }
         },
@@ -116,7 +102,6 @@
             "description": "How many orders to return, newest first.",
             "maximum": 10,
             "minimum": 1,
-            "title": "Limit",
             "type": "integer"
           }
         },
@@ -133,37 +118,18 @@
         "additionalProperties": false,
         "properties": {
           "phone": {
-            "anyOf": [
-              {
-                "maxLength": 20,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Registered mobile number as the caller said it.",
-            "title": "Phone"
+            "maxLength": 20,
+            "type": "string",
+            "description": "Registered mobile number as the caller said it."
           },
           "email": {
-            "anyOf": [
-              {
-                "maxLength": 254,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Registered email address.",
-            "title": "Email"
+            "maxLength": 254,
+            "type": "string",
+            "description": "Registered email address."
           },
           "postal_code": {
             "description": "6-digit PIN code of the account address.",
             "pattern": "^[0-9]{6}$",
-            "title": "Postal Code",
             "type": "string"
           }
         },
@@ -185,13 +151,11 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           },
           "sku": {
             "description": "Item SKU from get_order.",
             "pattern": "^[A-Z0-9-]{3,32}$",
-            "title": "Sku",
             "type": "string"
           },
           "reason": {
@@ -201,22 +165,12 @@
               "not_as_described",
               "no_longer_needed"
             ],
-            "title": "ReturnReason",
             "type": "string"
           },
           "notes": {
-            "anyOf": [
-              {
-                "maxLength": 500,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Caller's description, if any.",
-            "title": "Notes"
+            "maxLength": 500,
+            "type": "string",
+            "description": "Caller's description, if any."
           }
         },
         "required": [
@@ -244,29 +198,18 @@
               "order_status",
               "other"
             ],
-            "title": "TicketCategory",
             "type": "string"
           },
           "summary": {
             "description": "What the customer needs.",
             "maxLength": 1000,
             "minLength": 10,
-            "title": "Summary",
             "type": "string"
           },
           "order_number": {
-            "anyOf": [
-              {
-                "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
-                "pattern": "^VX-[0-9]{4}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Order Number"
+            "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
+            "pattern": "^VX-[0-9]{4}$",
+            "type": "string"
           },
           "priority": {
             "enum": [
@@ -274,7 +217,6 @@
               "normal",
               "high"
             ],
-            "title": "TicketPriority",
             "type": "string",
             "default": "normal"
           }
@@ -304,29 +246,18 @@
               "tool_failure",
               "low_confidence"
             ],
-            "title": "EscalationReason",
             "type": "string"
           },
           "summary": {
             "description": "The issue and what has been tried so far.",
             "maxLength": 2000,
             "minLength": 10,
-            "title": "Summary",
             "type": "string"
           },
           "order_number": {
-            "anyOf": [
-              {
-                "maxLength": 40,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Order the caller mentioned, verified or not.",
-            "title": "Order Number"
+            "maxLength": 40,
+            "type": "string",
+            "description": "Order the caller mentioned, verified or not."
           },
           "category": {
             "enum": [
@@ -336,7 +267,6 @@
               "order_status",
               "other"
             ],
-            "title": "TicketCategory",
             "type": "string",
             "default": "other"
           }
@@ -360,7 +290,6 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           },
           "reason": {
@@ -369,23 +298,12 @@
               "missing_delivery",
               "goodwill"
             ],
-            "title": "RefundRequestReason",
             "type": "string"
           },
           "sku": {
-            "anyOf": [
-              {
-                "description": "Item SKU from get_order.",
-                "pattern": "^[A-Z0-9-]{3,32}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
             "description": "Refund one item. Required for reason \"return\"; omit for whole order.",
-            "title": "Sku"
+            "pattern": "^[A-Z0-9-]{3,32}$",
+            "type": "string"
           }
         },
         "required": [
@@ -407,7 +325,6 @@
           "order_number": {
             "description": "Order number, e.g. VX-1508. If unsure what the caller said, use find_order_candidates first.",
             "pattern": "^VX-[0-9]{4}$",
-            "title": "Order Number",
             "type": "string"
           },
           "issue": {
@@ -418,24 +335,13 @@
               "not_as_described",
               "no_longer_needed"
             ],
-            "title": "Issue",
             "type": "string",
             "description": "Why a replacement is needed."
           },
           "sku": {
-            "anyOf": [
-              {
-                "description": "Item SKU from get_order.",
-                "pattern": "^[A-Z0-9-]{3,32}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
             "description": "Item to replace. Required unless the issue is missing_delivery.",
-            "title": "Sku"
+            "pattern": "^[A-Z0-9-]{3,32}$",
+            "type": "string"
           }
         },
         "required": [

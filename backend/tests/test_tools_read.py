@@ -1,3 +1,4 @@
+import re
 from dataclasses import replace
 
 import pytest
@@ -7,7 +8,7 @@ from app.db.models import ToolInvocation
 from app.repositories.customers import get_customer_by_email
 from app.tools.errors import ErrorCode
 from app.tools.registry import ALL_TOOLS, call_tool
-from tests.tool_helpers import new_key, verify_as
+from tests.tool_helpers import new_key, run_write, verify_as
 
 pytestmark = [pytest.mark.anyio, pytest.mark.db]
 
@@ -168,6 +169,23 @@ async def test_overdue_flag(ctx):
     (shipment,) = data["shipments"]
     assert shipment["is_overdue"] is True
     assert shipment["latest_event"]["code"] == "in_transit"
+    assert data["already_resolved"] is None
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "given"),
+    [
+        ("issue_refund", {"reason": "missing_delivery"}, r"refund of ₹3,499 \(RF-\d{6}, pending\)"),
+        ("reship_order", {"issue": "missing_delivery"}, r"replacement order VX-\d{4}"),
+    ],
+)
+async def test_remedies_already_given_are_listed(ctx, tool, args, given):
+    """So the model doesn't offer a refund or replacement that policy would then refuse."""
+    await verify_as(ctx, "meera.pillai@example.com")
+    assert (await run_write(ctx, tool, order_number="VX-8015", **args)).ok
+    data = await ok(ctx, "get_shipment_status", {"order_number": "VX-8015"})
+    resolved = data["already_resolved"]
+    assert re.fullmatch(f"Already given: {given}. No further refund or replacement .*", resolved)
 
 
 async def test_not_overdue_and_delivery_note(ctx):

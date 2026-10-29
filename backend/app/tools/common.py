@@ -118,12 +118,14 @@ def policy_failure(decision: PolicyDecision) -> ToolFailure:
             hint="Offer escalate_to_human with reason policy_requires_review.",
             details=details,
         )
-    return ToolFailure(
-        ErrorCode.NOT_ELIGIBLE,
-        decision.message,
-        hint="Explain the reason. Do not retry or rephrase the request to get around it.",
-        details=details,
-    )
+    hint = "Explain the reason. Do not retry or rephrase the request to get around it."
+    if decision.reason in (Reason.ALREADY_REFUNDED, Reason.ALREADY_RESOLVED):
+        # Live run: after "already refunded" the model offered a replacement, refused next.
+        hint += (
+            " The problem is already resolved, so no refund or replacement is available for "
+            "it. Don't offer one; say what was done, and offer a ticket if they still need help."
+        )
+    return ToolFailure(ErrorCode.NOT_ELIGIBLE, decision.message, hint=hint, details=details)
 
 
 async def authorize(

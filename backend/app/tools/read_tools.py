@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Self
 
 from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import select
 
 from app.db.models import Order, Shipment, ShipmentEvent
 from app.domain.enums import OrderStatus, RefundStatus, ShipmentEventCode, ShipmentStatus
@@ -286,6 +287,10 @@ class GetShipmentStatusOutput(ToolOutput):
     order_status: OrderStatus
     shipments: list[ShipmentView]
     unshipped_item_names: list[str]
+    # Worded for the model, which sees field values but not these descriptions.
+    already_resolved: str | None = Field(
+        description="Set when a refund or replacement was already given for this order."
+    )
 
 
 def _event(e: ShipmentEvent) -> EventView:
@@ -329,11 +334,28 @@ async def get_shipment_status(ctx: ToolContext, args: OrderLookupInput) -> GetSh
     """
     order = await load_owned_order(ctx, args.order_number)
     now = ctx.now()
+    remedies = [
+        f"refund of {format_inr(r.amount_paise)} ({refund_ref(r.id)}, {r.status})"
+        for r in order.refunds
+        if r.status in (RefundStatus.PENDING, RefundStatus.SUCCEEDED)
+    ]
+    replacement = await ctx.db.scalar(
+        select(Order.order_number).where(Order.replaces_order_id == order.id).limit(1)
+    )
+    if replacement:
+        remedies.append(f"replacement order {replacement}")
+    resolved = (
+        f"Already given: {'; '.join(remedies)}. No further refund or replacement is "
+        "available for this order. Tell the customer what was done; don't offer another."
+        if remedies
+        else None
+    )
     return GetShipmentStatusOutput(
         order_number=order.order_number,
         order_status=order.status,
         shipments=[_shipment(s, now) for s in order.shipments],
         unshipped_item_names=[i.product_name for i in order.items if i.shipment_id is None],
+        already_resolved=resolved,
     )
 
 
