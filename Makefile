@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate
+.PHONY: up down test lint format migrate seed reseed
 
 up:
 	docker compose up -d --build
@@ -17,3 +17,9 @@ format:
 
 migrate:
 	cd backend && uv run alembic upgrade head
+
+seed:
+	cd backend && uv run python -m app.db.seed
+
+reseed:
+	cd backend && uv run python -m app.db.seed --reset

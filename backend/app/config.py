@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     postgres_user: str
     postgres_password: SecretStr = SecretStr("")
     postgres_db: str = "resolveai"
+    # Dropped and rebuilt by the test suite; must differ from postgres_db and contain "test".
+    test_postgres_db: str = "resolveai_test"
 
     redis_url: str = "redis://127.0.0.1:6379/0"
 

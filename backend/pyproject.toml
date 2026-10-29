@@ -33,3 +33,4 @@ select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["db: needs the PostgreSQL test database (deselect with -m 'not db')"]

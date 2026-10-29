@@ -8,6 +8,25 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      # Throwaway CI-only database; trust auth means no credential to store.
+      postgres:
+        image: pgvector/pgvector:0.8.0-pg14
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_DB: resolveai
+      TEST_POSTGRES_DB: resolveai_test
     defaults:
       run:
         working-directory: backend
