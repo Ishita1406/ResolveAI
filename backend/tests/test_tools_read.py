@@ -34,7 +34,7 @@ GATED_CALLS = {
     "find_order_candidates": {"heard": "fifteen oh eight"},
     "create_return": {"order_number": "VX-1508", "sku": "PWB-10K", "reason": "damaged"},
     "issue_refund": {"order_number": "VX-8015", "reason": "missing_delivery"},
-    "reship_order": {"order_number": "VX-8015"},
+    "reship_order": {"order_number": "VX-8015", "issue": "missing_delivery"},
     "create_ticket": {"category": "other", "summary": "Customer has a question."},
 }
 
@@ -188,13 +188,13 @@ async def _eligibility(ctx, email, order_number, sku=None):
 @pytest.mark.parametrize(
     ("email", "order", "sku", "outcome", "reason"),
     [
-        ("neha.gupta@example.com", "VX-4410", "JNS-IND-32", "not_eligible", "window_expired"),
-        ("neha.gupta@example.com", "VX-4411", "TSH-BLK-M", "eligible", None),
-        ("vikram.singh@example.com", "VX-5120", "SPK-BT-10", "not_eligible", "already_returned"),
-        ("ananya.rao@example.com", "VX-6031", "SAR-SLK-01", "not_eligible", "order_cancelled"),
-        ("aarav.mehta@example.com", "VX-2201", "LMP-DSK-LED", "not_eligible", "not_shipped"),
-        ("aarav.mehta@example.com", "VX-2202", "CHR-USBC-65", "not_eligible", "not_delivered"),
-        ("arjun.malhotra@example.com", "VX-7302", "LAP-PRO-16", "eligible", None),
+        ("neha.gupta@example.com", "VX-4410", "JNS-IND-32", "reject", "window_expired"),
+        ("neha.gupta@example.com", "VX-4411", "TSH-BLK-M", "approve", None),
+        ("vikram.singh@example.com", "VX-5120", "SPK-BT-10", "reject", "already_returned"),
+        ("ananya.rao@example.com", "VX-6031", "SAR-SLK-01", "reject", "order_cancelled"),
+        ("aarav.mehta@example.com", "VX-2201", "LMP-DSK-LED", "reject", "not_shipped"),
+        ("aarav.mehta@example.com", "VX-2202", "CHR-USBC-65", "reject", "not_delivered"),
+        ("arjun.malhotra@example.com", "VX-7302", "LAP-PRO-16", "approve", None),
     ],
 )
 async def test_return_eligibility_edge_cases(ctx, email, order, sku, outcome, reason):

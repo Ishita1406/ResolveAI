@@ -9,7 +9,7 @@ from sqlalchemy.pool import NullPool
 
 from app.db.models import Refund, ToolInvocation
 from app.tools.registry import call_tool
-from tests.tool_helpers import make_ctx, new_key, verify_as
+from tests.tool_helpers import force_confirm, make_ctx, new_key, verify_as
 
 pytestmark = [pytest.mark.anyio, pytest.mark.db]
 
@@ -33,7 +33,9 @@ async def _refund(engine, key):
     async with AsyncSession(engine) as session:
         ctx = make_ctx(session)
         await verify_as(ctx, "meera.pillai@example.com")
-        return await call_tool(ctx, "issue_refund", {**REFUND, "idempotency_key": key})
+        # Each session holds its own confirmed action carrying the given key.
+        args = force_confirm(ctx, "issue_refund", key, 3_499_00, **REFUND)
+        return await call_tool(ctx, "issue_refund", args)
 
 
 async def _refund_count(engine, keys):
@@ -60,5 +62,5 @@ async def test_different_keys_concurrently_cannot_double_refund(engine):
     outcomes = sorted([a.ok, b.ok])
     assert outcomes == [False, True]
     loser = a if not a.ok else b
-    assert loser.error.details == {"reason": "already_refunded"}
+    assert loser.error.details == {"reason": "already_refunded", "rule": "refunds.balance"}
     assert await _refund_count(engine, keys) == 1

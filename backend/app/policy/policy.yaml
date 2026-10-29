@@ -1,0 +1,56 @@
+# ResolveAI business policy: the single source of truth for every rule value.
+# The customer-facing documents in docs/policies/ must agree with this file;
+# tests/test_policy_docs.py fails if they don't. Money is whole rupees (integers only).
+version: "2026-10-29.1"
+
+returns:
+  # Eligible while now <= shipment delivered_at + window_days (exact timestamp).
+  window_days: 30
+
+refunds:
+  # Automatic refunds on one order, summed across all refunds (pending + succeeded).
+  per_order_cap_inr: 10000
+  # Automatic refunds for one customer across all orders in a rolling window.
+  per_customer_cap_inr: 15000
+  per_customer_window_days: 30
+  # What the customer is told about when the money arrives.
+  processing_business_days_min: 5
+  processing_business_days_max: 7
+
+reship:
+  # Largest replacement value the agent may send without a specialist.
+  max_value_inr: 10000
+
+shipping:
+  free_shipping_threshold_inr: 499
+  standard_fee_inr: 40
+
+missing_delivery:
+  # A parcel not delivered by ETA + grace_days counts as missing (strictly after).
+  grace_days_after_eta: 3
+
+# Which remedies each issue allows. Refunds for item issues need a return on file.
+remedies:
+  missing_delivery: [reship, refund]
+  damaged: [reship, refund]
+  wrong_item: [reship, refund]
+  not_as_described: [refund]
+  no_longer_needed: [refund]
+
+# true: hand to a human (require_human). false: refuse outright (reject).
+escalate_when:
+  carrier_marked_delivered: true
+  returned_to_sender: true
+  goodwill_refund_requested: true
+  over_order_refund_cap: true
+  over_customer_refund_cap: true
+  over_reship_value_cap: true
+
+verification:
+  max_attempts: 3
+
+confirmation:
+  # An unconfirmed proposal expires after this many further customer turns,
+  # or after this many seconds, whichever comes first.
+  expire_after_turns: 2
+  expire_after_seconds: 180

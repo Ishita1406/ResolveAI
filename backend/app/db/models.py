@@ -324,3 +324,29 @@ class ToolInvocation(Base):
     request_hash: Mapped[str] = mapped_column(String(64))
     response: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_at()
+
+
+class PolicyDecisionLog(Base):
+    """Audit trail: every policy decision on a proposed or executing write action."""
+
+    __tablename__ = "policy_decisions"
+
+    id: Mapped[int] = pk()
+    decided_at: Mapped[datetime]
+    stage: Mapped[str] = mapped_column(String(16))
+    tool_name: Mapped[str] = mapped_column(String(64))
+    action_id: Mapped[str] = mapped_column(String(40), index=True)
+    verdict: Mapped[str] = mapped_column(String(16))
+    rule: Mapped[str] = mapped_column(String(80))
+    reason: Mapped[str | None] = mapped_column(String(40))
+    message: Mapped[str] = mapped_column(Text)
+    amount_paise: Mapped[int | None] = mapped_column(BigInteger)
+    policy_version: Mapped[str] = mapped_column(String(40))
+    facts: Mapped[dict] = mapped_column(JSONB)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"))
+
+    __table_args__ = (
+        CheckConstraint("stage IN ('proposal', 'execution')", name="stage_known"),
+        CheckConstraint("verdict IN ('approve', 'reject', 'require_human')", name="verdict_known"),
+    )

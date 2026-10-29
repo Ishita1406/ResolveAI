@@ -107,3 +107,10 @@ class EscalationReason(StrEnum):
     REPEATED_MISUNDERSTANDING = "repeated_misunderstanding"
     TOOL_FAILURE = "tool_failure"
     LOW_CONFIDENCE = "low_confidence"
+
+
+class RefundRequestReason(StrEnum):
+    # What the agent may request. Cancellation refunds are automatic, never agent-issued.
+    RETURN = "return"
+    MISSING_DELIVERY = "missing_delivery"
+    GOODWILL = "goodwill"

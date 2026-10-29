@@ -1,7 +1,5 @@
 """The only entry point the agent uses: call_tool(ctx, name, arguments) -> ToolResult."""
 
-import hashlib
-import json
 import logging
 from typing import Any
 
@@ -10,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db.models import ToolInvocation
+from app.policy.audit import flush_decisions
+from app.policy.state import RUNNABLE_STATES, ActionState, args_hash
 from app.tools import read_tools, write_tools  # noqa: F401 - registers the tools
 from app.tools.base import READ_TOOLS, WRITE_TOOLS, ToolKind, ToolSpec, WriteInput
 from app.tools.context import ToolCallRecord, ToolContext
@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 ALL_TOOLS: dict[str, ToolSpec] = {**READ_TOOLS, **WRITE_TOOLS}
 
 
-def _validation_error(exc: ValidationError) -> ToolError:
+def validation_error(exc: ValidationError) -> ToolError:
     problems = [
         {"field": ".".join(str(p) for p in e["loc"]) or "(arguments)", "problem": e["msg"]}
         for e in exc.errors()
@@ -33,18 +33,13 @@ def _validation_error(exc: ValidationError) -> ToolError:
     )
 
 
-def _request_hash(args: WriteInput) -> str:
-    payload = args.model_dump(mode="json", exclude={"idempotency_key"})
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-
 async def _run_write(ctx: ToolContext, spec: ToolSpec, args: WriteInput) -> ToolResult:
     """Claim the key, run, store the result, commit: all in one transaction.
 
     A concurrent call with the same key blocks on the unique index until this one commits,
     then replays its stored result. If this call fails, the claim rolls back with it.
     """
-    request_hash = _request_hash(args)
+    request_hash = args_hash(args)
     claimed = await ctx.db.scalar(
         insert(ToolInvocation)
         .values(
@@ -112,7 +107,7 @@ async def _dispatch(ctx: ToolContext, spec: ToolSpec, arguments: dict[str, Any])
     try:
         args = spec.input_model.model_validate(arguments)
     except ValidationError as exc:
-        return ToolResult(tool=spec.name, ok=False, error=_validation_error(exc))
+        return ToolResult(tool=spec.name, ok=False, error=validation_error(exc))
     if spec.requires_verification:
         # Gate before any database access: an unverified call never touches data.
         try:
@@ -120,6 +115,38 @@ async def _dispatch(ctx: ToolContext, spec: ToolSpec, arguments: dict[str, Any])
         except ToolFailure as failure:
             return ToolResult(tool=spec.name, ok=False, error=failure.error)
 
+    action = None
+    if spec.kind is ToolKind.WRITE:
+        # Write tools run only for an action the customer confirmed, with these exact arguments.
+        action = ctx.state.action_for_key(args.idempotency_key)
+        if (
+            action is None
+            or action.tool != spec.name
+            or action.args_hash != args_hash(args)
+            or action.state not in RUNNABLE_STATES
+        ):
+            error = ToolError(
+                code=ErrorCode.ACTION_NOT_CONFIRMED,
+                message="I need your confirmation before I do that.",
+                hint="Propose the action, read it back, and execute only after the customer "
+                "confirms (app.policy.gate).",
+            )
+            return ToolResult(tool=spec.name, ok=False, error=error)
+
+    result = await _run(ctx, spec, args)
+    await flush_decisions(ctx)
+    if action is not None and action.state is ActionState.CONFIRMED:
+        if result.ok:
+            action.transition(ActionState.EXECUTED, at=ctx.now(), turn=ctx.state.turn)
+            action.result = result.data
+        elif result.error is not None and not result.error.retryable:
+            action.transition(
+                ActionState.REJECTED, at=ctx.now(), turn=ctx.state.turn, note=result.error.code
+            )
+    return result
+
+
+async def _run(ctx: ToolContext, spec: ToolSpec, args: Any) -> ToolResult:
     try:
         if spec.kind is ToolKind.WRITE:
             return await _run_write(ctx, spec, args)

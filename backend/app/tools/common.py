@@ -1,9 +1,17 @@
-from datetime import datetime
+from typing import Any
 
 from app.db.models import Order, OrderItem
-from app.domain.formatting import format_date, format_inr
 from app.domain.order_ids import match_order_numbers
-from app.domain.policy import Decision, Outcome, Reason
+from app.policy.audit import Stage, record_decision
+from app.policy.engine import (
+    PolicyDecision,
+    PolicyFacts,
+    ProposedAction,
+    Reason,
+    Verdict,
+    get_engine,
+)
+from app.policy.facts import load_facts
 from app.repositories import orders as order_repo
 from app.tools.context import ToolContext
 from app.tools.errors import ErrorCode, ToolFailure
@@ -63,69 +71,80 @@ def find_item(order: Order, sku: str) -> OrderItem:
     return item
 
 
-def reason_message(
-    reason: Reason | None,
-    order_number: str,
-    *,
-    deadline: datetime | None = None,
-    eta: datetime | None = None,
-    amount_paise: int | None = None,
-) -> str:
-    n = order_number
-    match reason:
-        case None:
-            return "Eligible."
-        case Reason.ORDER_CANCELLED:
-            return (
-                f"Order {n} was cancelled, so it can't be returned or refunded again. "
-                "Refunds for cancellations are processed automatically."
-            )
-        case Reason.NOT_SHIPPED:
-            return f"That item from order {n} hasn't shipped yet."
-        case Reason.NOT_DELIVERED:
-            return f"That item from order {n} hasn't been delivered yet."
-        case Reason.WINDOW_EXPIRED:
-            closed = f" on {format_date(deadline)}" if deadline else ""
-            return f"The return window for order {n} closed{closed}."
-        case Reason.ALREADY_RETURNED:
-            return f"A return for that item on order {n} is already in progress or complete."
-        case Reason.ALREADY_REFUNDED:
-            return f"Order {n} has already been fully refunded."
-        case Reason.ALREADY_RESOLVED:
-            return f"Order {n} already has a replacement or refund for the missing delivery."
-        case Reason.NO_RETURN_ON_FILE:
-            return f"There's no return on file for that item on order {n} yet."
-        case Reason.NOT_YET_OVERDUE:
-            by = f" It's expected by {format_date(eta)}." if eta else ""
-            return f"Order {n} is still on its way and isn't late yet.{by}"
-        case Reason.DELIVERED_PER_CARRIER:
-            return (
-                f"The carrier shows order {n} as delivered, so a specialist needs to investigate."
-            )
-        case Reason.RETURNED_TO_SENDER:
-            return f"The parcel for order {n} is being returned to us; a specialist will help."
-        case Reason.ABOVE_AUTO_REFUND_CAP:
-            amount = f" of {format_inr(amount_paise)}" if amount_paise is not None else ""
-            return f"A refund{amount} is more than I can approve myself, so a specialist will."
-        case Reason.GOODWILL_NEEDS_APPROVAL:
-            return "Goodwill refunds need a specialist's approval."
-        case Reason.LOST_IN_TRANSIT | Reason.OVERDUE:
-            return f"Order {n} qualifies as a missing delivery."
-    return f"That isn't possible for order {n}."
+async def resolve_order(
+    ctx: ToolContext, tool: str, args: Any, *, for_update: bool = False
+) -> Order | None:
+    """The order (and item) an action refers to, checked for ownership before policy runs."""
+    if tool == "escalate_to_human":
+        return None  # escalation never resolves orders: it must work unverified
+    number = getattr(args, "order_number", None)
+    if number is None:
+        return None
+    order = await load_owned_order(ctx, number, for_update=for_update)
+    if getattr(args, "sku", None):
+        find_item(order, args.sku)
+    return order
 
 
-def policy_failure(decision: Decision, order_number: str, **message_args) -> ToolFailure:
-    message = reason_message(decision.reason, order_number, **message_args)
-    if decision.outcome is Outcome.REQUIRES_HUMAN:
+async def evaluate(
+    ctx: ToolContext, tool: str, args: Any, order: Order | None, *, stage: Stage, action_id: str
+) -> tuple[PolicyDecision, PolicyFacts]:
+    facts = await load_facts(
+        ctx.db,
+        now=ctx.now(),
+        customer_id=ctx.state.customer_id,
+        order=order,
+        ticket_category=getattr(args, "category", None) if tool == "create_ticket" else None,
+    )
+    decision = get_engine().evaluate(ProposedAction(tool, args), facts)
+    record_decision(ctx, decision, stage=stage, tool=tool, action_id=action_id)
+    return decision, facts
+
+
+def policy_failure(decision: PolicyDecision) -> ToolFailure:
+    details: dict[str, Any] = {"reason": decision.reason, "rule": decision.rule}
+    if decision.reason is Reason.DUPLICATE_TICKET:
+        details["ticket_reference"] = decision.facts["ticket_reference"]
+        return ToolFailure(
+            ErrorCode.TICKET_ALREADY_OPEN,
+            decision.message,
+            hint="Share the existing reference. Don't open a duplicate.",
+            details=details,
+        )
+    if decision.verdict is Verdict.REQUIRE_HUMAN:
         return ToolFailure(
             ErrorCode.REQUIRES_HUMAN,
-            message,
+            decision.message,
             hint="Offer escalate_to_human with reason policy_requires_review.",
-            details={"reason": decision.reason},
+            details=details,
         )
     return ToolFailure(
         ErrorCode.NOT_ELIGIBLE,
-        message,
+        decision.message,
         hint="Explain the reason. Do not retry or rephrase the request to get around it.",
-        details={"reason": decision.reason},
+        details=details,
     )
+
+
+async def authorize(
+    ctx: ToolContext, tool: str, args: Any, order: Order | None
+) -> tuple[PolicyDecision, PolicyFacts]:
+    """Execution-time policy check, run under the caller's locks.
+
+    Raises unless approved, and unless the amount still equals what the customer confirmed.
+    """
+    action = ctx.state.action_for_key(args.idempotency_key)
+    action_id = action.id if action else "unknown"
+    decision, facts = await evaluate(
+        ctx, tool, args, order, stage=Stage.EXECUTION, action_id=action_id
+    )
+    if not decision.approved:
+        raise policy_failure(decision)
+    if action is not None and action.amount_paise != decision.amount_paise:
+        raise ToolFailure(
+            ErrorCode.CONFIRMATION_STALE,
+            "Something changed since you confirmed, so let me check that again.",
+            hint="Propose the action again and get a fresh confirmation.",
+            details={"confirmed_paise": action.amount_paise, "now_paise": decision.amount_paise},
+        )
+    return decision, facts

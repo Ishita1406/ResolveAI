@@ -178,7 +178,7 @@
     "type": "function",
     "function": {
       "name": "create_return",
-      "description": "[changes data: only call after the customer has explicitly confirmed] Open a return for one item on the verified customer's order.\n\nOnly after the customer has confirmed. Fails with not_eligible if policy forbids it.\nThis does not refund; call issue_refund (reason \"return\") afterwards if appropriate.",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Open a return for one item on the verified customer's order.\n\nFails with not_eligible if policy forbids it. This does not refund; propose\nissue_refund (reason \"return\") afterwards if appropriate.",
       "parameters": {
         "additionalProperties": false,
         "properties": {
@@ -353,7 +353,7 @@
     "type": "function",
     "function": {
       "name": "issue_refund",
-      "description": "[changes data: only call after the customer has explicitly confirmed] Refund the verified customer for a return or a missing delivery.\n\nOnly after the customer has confirmed the amount from check_return_eligibility or\nget_order. The amount is computed by the backend and capped at what's still refundable.\nRefunds above the automatic limit, goodwill refunds and parcels the carrier marked\ndelivered fail with requires_human.",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Refund the verified customer for a returned item or a missing delivery.\n\nThe amount is computed by policy from stored data, capped at what's still refundable,\nand subject to per-order and per-customer limits. Goodwill refunds, parcels the carrier\nmarked delivered and amounts over a limit fail with requires_human.",
       "parameters": {
         "additionalProperties": false,
         "properties": {
@@ -400,7 +400,7 @@
     "type": "function",
     "function": {
       "name": "reship_order",
-      "description": "[changes data: only call after the customer has explicitly confirmed] Send a free replacement for a lost or badly overdue parcel on the verified customer's order.\n\nOnly after the customer has chosen a reshipment over a refund and confirmed. Creates a\nnew order at no charge. Parcels the carrier marked delivered fail with requires_human.",
+      "description": "[changes data: only call after the customer has explicitly confirmed] Send a free replacement on the verified customer's order.\n\nFor a lost or badly overdue parcel (issue missing_delivery), or for a damaged or wrong\nitem inside the return window. Which issues allow a replacement is set by policy.\nCreates a new order at no charge.",
       "parameters": {
         "additionalProperties": false,
         "properties": {
@@ -409,6 +409,18 @@
             "pattern": "^VX-[0-9]{4}$",
             "title": "Order Number",
             "type": "string"
+          },
+          "issue": {
+            "enum": [
+              "missing_delivery",
+              "damaged",
+              "wrong_item",
+              "not_as_described",
+              "no_longer_needed"
+            ],
+            "title": "Issue",
+            "type": "string",
+            "description": "Why a replacement is needed."
           },
           "sku": {
             "anyOf": [
@@ -422,12 +434,13 @@
               }
             ],
             "default": null,
-            "description": "Reship one item; omit to reship every item.",
+            "description": "Item to replace. Required unless the issue is missing_delivery.",
             "title": "Sku"
           }
         },
         "required": [
-          "order_number"
+          "order_number",
+          "issue"
         ],
         "type": "object"
       }

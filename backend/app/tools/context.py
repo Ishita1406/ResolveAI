@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.policy import MAX_VERIFICATION_ATTEMPTS
+from app.policy.audit import DecisionRecord
+from app.policy.config import get_policy
+from app.policy.state import PendingAction
 from app.tools.errors import ErrorCode, ToolFailure
 
 
@@ -25,7 +27,9 @@ class SessionState:
     customer_name: str | None = None
     verified_at: datetime | None = None
     failed_verification_attempts: int = 0
+    turn: int = 0  # customer turns so far; drives confirmation expiry
     history: list[ToolCallRecord] = field(default_factory=list)
+    actions: dict[str, PendingAction] = field(default_factory=dict)
 
     @property
     def is_verified(self) -> bool:
@@ -33,8 +37,12 @@ class SessionState:
 
     @property
     def is_locked(self) -> bool:
-        return (
-            not self.is_verified and self.failed_verification_attempts >= MAX_VERIFICATION_ATTEMPTS
+        max_attempts = get_policy().verification.max_attempts
+        return not self.is_verified and self.failed_verification_attempts >= max_attempts
+
+    def action_for_key(self, idempotency_key: str) -> PendingAction | None:
+        return next(
+            (a for a in self.actions.values() if a.idempotency_key == idempotency_key), None
         )
 
 
@@ -51,6 +59,7 @@ class ToolContext:
     conversation_id: int | None = None
     clock: Callable[[], datetime] = _utcnow
     rng: random.Random = field(default_factory=random.SystemRandom)
+    pending_decisions: list[DecisionRecord] = field(default_factory=list)
 
     def now(self) -> datetime:
         return self.clock()

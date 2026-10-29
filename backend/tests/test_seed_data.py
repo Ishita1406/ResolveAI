@@ -10,7 +10,7 @@ from app.db.models import Customer, Order, Refund, Shipment
 from app.db.seed import ANCHOR
 from app.domain.enums import OrderStatus, RefundStatus, ShipmentStatus
 from app.domain.order_ids import spoken_confusables
-from app.domain.policy import AUTO_REFUND_CAP_PAISE, RETURN_WINDOW_DAYS
+from app.policy.config import get_policy
 
 pytestmark = [pytest.mark.anyio, pytest.mark.db]
 
@@ -42,6 +42,7 @@ async def test_money_columns_are_integer_paise(db_session):
         ("orders", "total_paise"): "bigint",
         ("order_items", "unit_price_paise"): "bigint",
         ("refunds", "amount_paise"): "bigint",
+        ("policy_decisions", "amount_paise"): "bigint",
     }
 
 
@@ -98,7 +99,7 @@ async def _delivered_at(session, number):
 
 
 async def test_return_window_boundary_cases(db_session):
-    window = timedelta(days=RETURN_WINDOW_DAYS)
+    window = timedelta(days=get_policy().returns.window_days)
     expired = await _delivered_at(db_session, "VX-4410")
     eligible = await _delivered_at(db_session, "VX-4411")
     assert expired + window == ANCHOR - timedelta(days=1)
@@ -107,9 +108,9 @@ async def test_return_window_boundary_cases(db_session):
 
 async def test_high_value_order_exceeds_cap_inside_window(db_session):
     order = await db_session.scalar(select(Order).where(Order.order_number == "VX-7302"))
-    assert order.total_paise > AUTO_REFUND_CAP_PAISE
+    assert order.total_paise > get_policy().refunds.per_order_cap_paise
     delivered_at = await _delivered_at(db_session, "VX-7302")
-    assert ANCHOR - delivered_at < timedelta(days=RETURN_WINDOW_DAYS)
+    assert ANCHOR - delivered_at < timedelta(days=get_policy().returns.window_days)
 
 
 async def test_refund_idempotency_keys_unique(db_session):

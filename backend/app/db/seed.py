@@ -43,7 +43,7 @@ from app.domain.enums import (
     TurnRole,
 )
 from app.domain.order_ids import spoken_confusables
-from app.domain.policy import FREE_SHIPPING_THRESHOLD_PAISE, SHIPPING_FEE_PAISE
+from app.policy.config import get_policy
 
 SEED = 20261029
 # The dataset's "now". Fixed so relative cases (e.g. "return window expired by 1 day") stay
@@ -166,7 +166,9 @@ class _Builder:
             for p, q in lines
         ]
         subtotal = sum(i.line_total_paise for i in items)
-        shipping = 0 if subtotal >= FREE_SHIPPING_THRESHOLD_PAISE else SHIPPING_FEE_PAISE
+        rules = get_policy().shipping
+        free = subtotal >= rules.free_shipping_threshold_paise
+        shipping = 0 if free else rules.standard_fee_paise
         order = Order(
             order_number=number,
             status=status,

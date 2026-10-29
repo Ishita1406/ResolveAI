@@ -19,6 +19,10 @@ class ErrorCode(StrEnum):
     REQUIRES_HUMAN = "requires_human"
     TICKET_ALREADY_OPEN = "ticket_already_open"
     IDEMPOTENCY_KEY_REUSED = "idempotency_key_reused"
+    ACTION_NOT_FOUND = "action_not_found"
+    ACTION_NOT_PENDING = "action_not_pending"
+    ACTION_NOT_CONFIRMED = "action_not_confirmed"
+    CONFIRMATION_STALE = "confirmation_stale"
     INTERNAL_ERROR = "internal_error"
 
 

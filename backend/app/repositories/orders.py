@@ -49,7 +49,10 @@ async def get_order_for_customer(
         .options(*_ORDER_DETAIL)
     )
     if for_update:
-        stmt = stmt.with_for_update(of=Order).execution_options(populate_existing=True)
+        # NO KEY UPDATE: doesn't block (or deadlock with) FK inserts that reference the order.
+        stmt = stmt.with_for_update(of=Order, key_share=True).execution_options(
+            populate_existing=True
+        )
     return await session.scalar(stmt)
 
 

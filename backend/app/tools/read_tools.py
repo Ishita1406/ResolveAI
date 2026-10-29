@@ -10,14 +10,15 @@ from app.db.models import Order, Shipment, ShipmentEvent
 from app.domain.enums import OrderStatus, RefundStatus, ShipmentEventCode, ShipmentStatus
 from app.domain.formatting import format_date, format_inr
 from app.domain.order_ids import match_order_numbers, parse_spoken_order_number
-from app.domain.policy import (
-    MAX_VERIFICATION_ATTEMPTS,
-    Outcome,
+from app.policy.config import get_policy
+from app.policy.engine import (
     Reason,
-    evaluate_item_return,
-    is_overdue,
+    Verdict,
+    get_engine,
     refundable_balance_paise,
+    shipment_for,
 )
+from app.policy.facts import load_facts
 from app.repositories import customers as customer_repo
 from app.repositories import orders as order_repo
 from app.tools.base import OrderNumber, Sku, ToolInput, ToolKind, ToolOutput, tool
@@ -25,7 +26,6 @@ from app.tools.common import (
     MAX_CANDIDATES,
     find_item,
     load_owned_order,
-    reason_message,
     refund_ref,
     return_ref,
 )
@@ -78,7 +78,7 @@ async def verify_customer(ctx: ToolContext, args: VerifyCustomerInput) -> Verify
         state.failed_verification_attempts += 1
         if state.is_locked:
             raise _locked()
-        remaining = MAX_VERIFICATION_ATTEMPTS - state.failed_verification_attempts
+        remaining = get_policy().verification.max_attempts - state.failed_verification_attempts
         raise ToolFailure(
             ErrorCode.VERIFICATION_FAILED,
             "Those details don't match our records. Could you check them and try again?",
@@ -298,6 +298,12 @@ def _event(e: ShipmentEvent) -> EventView:
     )
 
 
+def _is_overdue(s: Shipment, now: datetime) -> bool:
+    """Past ETA and not delivered. Display only; missing-delivery policy adds a grace period."""
+    eta = s.estimated_delivery_at
+    return s.delivered_at is None and eta is not None and now > eta
+
+
 def _shipment(s: Shipment, now: datetime) -> ShipmentView:
     events = [_event(e) for e in s.events]
     return ShipmentView(
@@ -307,7 +313,7 @@ def _shipment(s: Shipment, now: datetime) -> ShipmentView:
         shipped_on=format_date(s.shipped_at) if s.shipped_at else None,
         expected_by=format_date(s.estimated_delivery_at) if s.estimated_delivery_at else None,
         delivered_on=format_date(s.delivered_at) if s.delivered_at else None,
-        is_overdue=is_overdue(s, now),
+        is_overdue=_is_overdue(s, now),
         item_names=[i.product_name for i in s.items],
         latest_event=events[-1] if events else None,
         events=events,
@@ -342,8 +348,9 @@ class CheckReturnEligibilityInput(ToolInput):
 class ItemEligibility(BaseModel):
     sku: str
     name: str
-    outcome: Outcome
+    outcome: Verdict
     reason: Reason | None
+    rule: str
     explanation: str
     return_by: str | None
     refund_amount_paise: int
@@ -367,23 +374,37 @@ async def check_return_eligibility(
     """
     order = await load_owned_order(ctx, args.order_number)
     items = [find_item(order, args.sku)] if args.sku else order.items
-    now = ctx.now()
+    engine = get_engine()
+    facts = await load_facts(
+        ctx.db, now=ctx.now(), customer_id=ctx.require_customer_id(), order=order
+    )
     results = []
     for item in items:
-        a = evaluate_item_return(order, item, now)
+        decision = engine.assess_return(order, item, facts.now)
+        amount = decision.amount_paise or 0
+        shipment = shipment_for(order, item)
+        deadline = (
+            engine.return_deadline(shipment.delivered_at)
+            if shipment and shipment.delivered_at
+            else None
+        )
+        if decision.approved:
+            explanation = f"Eligible for return until {format_date(deadline)}."
+            needs_human = not engine.check_refund_caps(order, amount, facts).approved
+        else:
+            explanation, needs_human = decision.message, False
         results.append(
             ItemEligibility(
                 sku=item.sku,
                 name=item.product_name,
-                outcome=a.decision.outcome,
-                reason=a.decision.reason,
-                explanation=reason_message(
-                    a.decision.reason, order.order_number, deadline=a.deadline
-                ),
-                return_by=format_date(a.deadline) if a.deadline else None,
-                refund_amount_paise=a.refund_amount_paise,
-                refund_amount_display=format_inr(a.refund_amount_paise),
-                refund_requires_human=a.refund_decision.outcome is Outcome.REQUIRES_HUMAN,
+                outcome=decision.verdict,
+                reason=decision.reason,
+                rule=decision.rule,
+                explanation=explanation,
+                return_by=format_date(deadline) if deadline else None,
+                refund_amount_paise=amount,
+                refund_amount_display=format_inr(amount),
+                refund_requires_human=needs_human,
             )
         )
     return CheckReturnEligibilityOutput(order_number=order.order_number, items=results)

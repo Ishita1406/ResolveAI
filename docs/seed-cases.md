@@ -7,9 +7,9 @@ The seed (`backend/app/db/seed.py`, `make seed` / `make reseed`) creates **50 cu
 | | |
 |---|---|
 | Seed "now" (`ANCHOR`) | **2026-10-29 06:30 UTC** (12:00 IST). Every relative date below is measured from this. The policy engine and evals must use `ANCHOR` as their clock when reasoning about seed data, or the date-based cases drift. |
-| Return window | `RETURN_WINDOW_DAYS = 30`, from the shipment's `delivered_at` (`app/domain/policy.py`) |
-| Auto-refund cap | `AUTO_REFUND_CAP_PAISE = ₹10,000` |
-| Shipping fee | ₹40, or free when the subtotal is ₹499 or more |
+| Return window | `returns.window_days: 30` in `backend/app/policy/policy.yaml`, from the shipment's `delivered_at` |
+| Auto-refund cap | `refunds.per_order_cap_inr: 10000` (₹10,000 per order); also ₹15,000 per customer per 30 days |
+| Shipping fee | ₹40, or free when the subtotal is ₹499 or more (`shipping.*` in the same file) |
 | Money | Integer paise (`bigint`), e.g. ₹1,299.00 = `129900` |
 | Identity | Customers 1–12 are the personas below, in this order. Customers 13–50 and their orders are generic random data. |
 
@@ -33,7 +33,7 @@ Phones and PIN codes are generated from the seed and are stable across runs. The
 | 9 | **Sound-alike IDs, different customers** | Rohan Iyer · rohan.iyer@example.com · +917837184901 · 600504 | **VX-1315** (silk saree, delivered 7 days ago) | Its sound-alike **VX-1350** ("thirteen fifteen" vs "thirteen fifty") belongs to customer 9 below. | Rohan saying "thirteen fifty" must get "not found on your account". `get_order_for_customer` returns `None`, never Priya's data. |
 | 9b | (owner of VX-1350) | Priya Sharma · priya.sharma@example.com · +916809773519 · 560105 | **VX-1350** `shipped` (smartwatch, in transit, ETA tomorrow) | | |
 | 10 | *Extra:* **duplicate full name** | Priya Sharma · priya.sharma2@example.com · +919693368194 · 380705 | VX-9012 `delivered` (3 paperbacks) | A second, unrelated customer named Priya Sharma. | Name alone can never verify identity. `find_customers_by_name` returns both. |
-| 11 | **High-value order above the refund cap** | Arjun Malhotra · arjun.malhotra@example.com · +918591207859 · 700123 | **VX-7302** `delivered` (ProBook 16 laptop, **₹84,999**) | Delivered 5 days ago, inside the return window. No returns, refunds or tickets yet. | Eligible by date but above `AUTO_REFUND_CAP_PAISE`. Must escalate to a human, not auto-refund. |
+| 11 | **High-value order above the refund cap** | Arjun Malhotra · arjun.malhotra@example.com · +918591207859 · 700123 | **VX-7302** `delivered` (ProBook 16 laptop, **₹84,999**) | Delivered 5 days ago, inside the return window. No returns, refunds or tickets yet. | Eligible by date but above the per-order refund cap. Must escalate to a human, not auto-refund. |
 | 12 | *Extra:* **stuck shipment** | Meera Pillai · meera.pillai@example.com · +917973188087 · 302647 | **VX-8015** `shipped` (Bluetooth speaker) | ETA was 4 days ago. The latest scan is `in_transit`, 8 days ago. | Missing-delivery workflow for a parcel that is overdue but not marked delivered. |
 | 13 | *Extra:* **unverified caller** | none (`conversations.customer_id IS NULL`) | (asks about VX-1350) | An abandoned voice conversation. The caller claims to be Priya Sharma, can't verify, and asks for the delivery address. | Reference transcript of a correct refusal. |
 
