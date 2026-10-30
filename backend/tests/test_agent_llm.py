@@ -45,7 +45,10 @@ async def test_text_is_streamed_then_completed():
     rec = Recorder(httpx.Response(200, content=_sse(_delta(content="Hel"), _delta(content="lo")),
                                   headers={"content-type": "text/event-stream"}))  # fmt: skip
     events = await _collect(_client(rec))
-    assert events == [TextDelta("Hel"), TextDelta("lo"), Completion(text="Hello")]
+    assert events[:2] == [TextDelta("Hel"), TextDelta("lo")]
+    completion = events[2]
+    assert completion == Completion(text="Hello", first_token_s=completion.first_token_s)
+    assert completion.first_token_s is not None and completion.first_token_s >= 0
     request = rec.requests[0]
     assert request.url == "https://llm.test/v1/chat/completions"
     assert request.headers["authorization"] == "Bearer test-key"
@@ -232,3 +235,20 @@ async def test_prompt_estimate_learns_from_reported_usage():
         _ = [e async for e in client.stream(messages, [])]
     assert limiter.settled == [3, 3, 3]  # bookings corrected to the real usage
     assert limiter.asked[0] > limiter.asked[1] > limiter.asked[2]  # estimate shrinks to fit
+
+
+async def test_a_routed_call_names_its_own_model():
+    rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
+    _ = [e async for e in _client(rec).stream([], [], model="small-model")]
+    assert json.loads(rec.requests[0].content)["model"] == "small-model"
+
+
+async def test_warm_opens_a_connection_without_spending_tokens():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        return httpx.Response(503)  # a failure is ignored: the real call will report it
+
+    await _client(handler).warm()
+    assert seen == [("GET", "/v1/models")]

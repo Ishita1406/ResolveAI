@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     llm_seed: int | None = None
     # Client-side tokens-per-minute budget. None means no limiter.
     llm_tokens_per_minute: int | None = None
+    # Latency (docs/progress/step-10-observability.md has the measurements):
+    # How long an idle HTTPS connection to the LLM is kept for the next call. httpx's 5 s
+    # default closed it between voice turns, so each turn paid for a new TLS connection.
+    llm_keepalive_s: float = 60.0
+    # Open the LLM connection when a voice call starts, so the first turn doesn't pay for it.
+    llm_prewarm: bool = True
+    # A smaller model for turns before verification (asking for details, policy questions;
+    # no account tools exist yet). Unset: one model for everything.
+    llm_fast_model: str | None = None
+    # USD per million tokens by model, as JSON: {"gemini-3.6-flash": {"input": .., "output": ..}}.
+    # Unpriced models get no cost from us (Langfuse prices known models itself).
+    llm_prices: dict[str, dict[str, float]] = {}
 
     # Agent loop
     agent_prompt_version: str = "v3"
@@ -93,12 +105,32 @@ class Settings(BaseSettings):
     incomplete_turn_silence_ms: int = 1600
     max_turn_s: float = 30.0
     filler_after_ms: int = 500  # say a short filler if a tool runs longer than this
+    # "sentence": speak each sentence as soon as the model finishes it. "reply": wait for the
+    # whole reply (the slower baseline, kept for comparison).
+    tts_streaming: Literal["sentence", "reply"] = "sentence"
     stt_connect_timeout_s: float = 5.0
     stt_final_wait_ms: int = 400  # after our end of turn, wait this long for the last words
     tts_first_audio_timeout_s: float = 5.0
     # ICE servers for WebRTC, e.g. ["stun:stun.l.google.com:19302"]. Empty: host candidates
     # only, which is enough on localhost and a LAN.
     webrtc_ice_servers: list[str] = []
+
+    # Observability (app/observability/). Logs: JSON lines on stdout, or "text".
+    log_level: str = "INFO"
+    log_format: Literal["json", "text"] = "json"
+    # Traces go over OTLP/HTTP to Langfuse when its keys are set, and/or to any collector at
+    # OTEL_EXPORTER_OTLP_ENDPOINT (e.g. http://localhost:4318). Neither: not exported.
+    otel_service_name: str = "resolveai"
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_exporter_otlp_headers: str | None = None  # "key=value,key2=value2"
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+    # Put model input and output on LLM spans. Off: they hold customer details (PII).
+    otel_capture_content: bool = False
+    # /admin/* (conversation replay). Set: requests need "Authorization: Bearer <token>".
+    # Unset: only requests from this machine are served.
+    admin_token: SecretStr | None = None
 
     def database_url(self, driver: str = "postgresql+psycopg") -> URL:
         # URL.create (not a string) so passwords with special characters need no escaping,

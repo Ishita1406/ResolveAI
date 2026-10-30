@@ -26,7 +26,7 @@ import json
 import sys
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -123,9 +123,7 @@ async def replay(
     await wait(lambda: session.idle)
     session.on_event = previous
 
-    result.turns = [asdict(m) for m in session.metrics]
-    for turn in result.turns:
-        turn.pop("end_of_speech", None)
+    result.turns = [m.summary() for m in session.metrics]
     result.agent_audio = bytes(agent)
     result.customer_audio = bytes(customer)
     result.handed_over = session.escalation_reference if session.ended.is_set() else None

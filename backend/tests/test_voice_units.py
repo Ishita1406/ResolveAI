@@ -121,6 +121,16 @@ def test_transcript_joins_segments_and_never_repeats_handed_over_words():
     [
         ("I want a refund", True),
         ("where is my order VX-8015", True),
+        # A finished request ending on a detail noun doesn't wait the long silence.
+        ("Hi, where is my order", True),
+        ("Hi, where is my order?", True),
+        ("I need some help with my order.", True),
+        ("can you check my email", True),
+        # The same nouns before details still wait.
+        ("it's order", False),
+        ("my phone", False),
+        ("where is my order number is", False),
+        ("where is the", False),  # a function word stays unfinished, even in a question
         ("my order number is", False),
         ("my order number is v x one five", False),  # 2 of 4 digits
         ("my PIN is three zero two", False),  # 3 of 6 digits

@@ -16,18 +16,24 @@ Each turn runs in its own task feeding a queue. The caller iterates events and m
 any time (barge-in); the turn task is then cancelled and cleans up: a confirmed write that
 already started is allowed to finish, history keeps only what the customer actually heard,
 and the session is saved.
+
+Observability: each turn is a span in its conversation's trace (app/observability), with a
+span per model call and per tool call, and its usage, cost and timings go to turn_metrics.
 """
 
 import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, aclosing
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, aclosing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from opentelemetry.trace import Span, Status, StatusCode
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import prefetch, transcript
@@ -54,6 +60,7 @@ from app.agent.prompts import PromptSet, render_system_prompt
 from app.agent.session import AgentSession, SessionBusyError, SessionStore
 from app.domain.enums import ConversationChannel, EscalationReason, TurnRole
 from app.domain.formatting import format_inr
+from app.observability import logs, metrics, tracing
 from app.policy import gate
 from app.policy.config import PolicyConfig
 from app.policy.state import ActionState
@@ -88,6 +95,11 @@ class AgentConfig:
     min_answer_time_s: float = 5.0  # don't start a retry wait that leaves less than this
     history_tool_result_chars: int = 400  # tool results in older turns are cut to this
     prefetch: bool = False  # deterministic verify/get_order before the model (prefetch.py)
+    # USD per million tokens by model, {"input": .., "output": ..}, for turn costs.
+    llm_prices: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Model routing: this model for calls made before the customer is verified. Those only
+    # ask for details, search policies or hand over; no account or money tools exist yet.
+    fast_model: str | None = None
 
 
 class _IterationLimitError(Exception):
@@ -115,6 +127,17 @@ class _Turn:
     held: bool = False  # "One moment, please." already said this turn
     done: DoneEvent | None = None  # sent only after the turn is saved
     redone: bool = False  # a cut-off reply was already asked for again this turn
+    # Observability (time.monotonic() values and running totals for turn_metrics).
+    turn_id: str = ""
+    started: float = field(default_factory=time.monotonic)
+    first_text_at: float | None = None
+    llm_first_token_ms: float | None = None
+    llm_ms: float = 0.0
+    tool_ms: float = 0.0
+    tool_calls: int = 0
+    cached_tokens: int = 0
+    cost_usd: float | None = None
+    model: str | None = None
 
 
 def wrap_customer_text(text: str) -> str:
@@ -177,10 +200,16 @@ class Agent:
         await self.store.save(session)
         return session
 
-    async def respond(self, session_id: str, text: str) -> AsyncIterator[AgentEvent]:
-        """Stream the reply to one customer message. Stop iterating to cancel the turn."""
+    async def respond(
+        self, session_id: str, text: str, *, turn_id: str | None = None
+    ) -> AsyncIterator[AgentEvent]:
+        """Stream the reply to one customer message. Stop iterating to cancel the turn.
+
+        `turn_id` names the turn in turn_metrics; the voice session passes its own so it can
+        add its timings to the same row. A new one is made when not given."""
         queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.create_task(self._run_turn(session_id, text, queue.put_nowait))
+        turn_id = turn_id or uuid.uuid4().hex
+        task = asyncio.create_task(self._run_turn(session_id, text, turn_id, queue.put_nowait))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
         finished = False
@@ -198,23 +227,50 @@ class Agent:
 
     # --- turn -----------------------------------------------------------------------------
 
-    async def _run_turn(self, session_id: str, text: str, emit: Callable) -> None:
+    async def end_session(self, session_id: str) -> None:
+        """The call or chat is over: record when, and write the conversation's root span."""
+        session = await self.store.load(session_id)
+        if session is None or session.conversation_id is None:
+            return
+        now = self.clock()
+        async with self.db_factory() as db:
+            first_end = await transcript.end_conversation(db, session.conversation_id, now=now)
+        if not first_end:
+            return  # the root span was written when it first ended
+        tracing.end_conversation(
+            session.conversation_id,
+            session.created_at,
+            now,
+            channel=str(session.channel),
+            verified=session.state.is_verified,
+            escalation_reference=session.escalation_reference,
+        )
+
+    async def _run_turn(self, session_id: str, text: str, turn_id: str, emit: Callable) -> None:
+        logs.bind(session_id=session_id, turn_id=turn_id)
         try:
             async with self.store.lock(session_id):
                 session = await self.store.load(session_id)
                 if session is None:
                     emit(ErrorEvent(code="session_not_found", message="Session not found."))
                     return
-                await self._run_loaded(session, text, emit)
+                logs.bind(conversation_id=session.conversation_id)
+                with tracing.turn(
+                    session.conversation_id, channel=str(session.channel), turn_id=turn_id
+                ) as span:
+                    await self._run_loaded(session, text, turn_id, emit, span)
         except SessionBusyError:
             emit(ErrorEvent(code="session_busy", message="Still working on the last message."))
         finally:
             emit(_END)
 
-    async def _run_loaded(self, session: AgentSession, text: str, emit: Callable) -> None:
+    async def _run_loaded(
+        self, session: AgentSession, text: str, turn_id: str, emit: Callable, span: Span
+    ) -> None:
         turn = _Turn(
             user_message={"role": "user", "content": wrap_customer_text(text)},
             deadline=asyncio.get_running_loop().time() + self.config.turn_timeout_s,
+            turn_id=turn_id,
         )
         async with self.db_factory() as db:
             ctx = ToolContext(
@@ -273,11 +329,12 @@ class Agent:
                 await self._settle(turn)
                 self._commit_history(session, turn)
                 session.updated_at = self.clock()
-                await self._record(db, session, turn, text)
+                turn_index = await self._record(db, session, turn, text)
+                await self._record_metrics(session, turn, span, turn_index)
                 await self.store.save(session)
                 if turn.done is not None:
                     # "done" means the turn is saved: the client may send the next message.
-                    emit(turn.done)
+                    emit(turn.done.model_copy(update={"turn_id": turn.turn_id}))
 
     async def _turn(
         self, session: AgentSession, ctx: ToolContext, turn: _Turn, text: str, emit: Callable
@@ -346,7 +403,9 @@ class Agent:
                 confirmed = gate.confirm(ctx, pending.id)
                 if not confirmed.ok:
                     return None
-                result = await self._protected(turn, gate.execute(ctx, pending.id))
+                with self._tool_span(turn, pending.tool, source="confirmed") as span:
+                    result = await self._protected(turn, gate.execute(ctx, pending.id))
+                    span.set_attribute("resolveai.tool.ok", result.ok)
                 emit(self._action_event(ctx, pending.id))
                 self._log_tool(
                     turn,
@@ -502,16 +561,24 @@ class Agent:
         """
         messages = self._build_messages(session, ctx, turn)
         tools = self.tools_verified if ctx.state.is_verified else self.tools_unverified
+        model = self.config.fast_model if not ctx.state.is_verified else None
         attempt = 0
         while True:
             spoke = [False]
             try:
-                completion, wrote_for_customer = await self._stream_once(
-                    messages, tools, turn, emit, spoke
-                )
-                turn.usage["llm_calls"] += 1
-                for key in ("prompt_tokens", "completion_tokens"):
-                    turn.usage[key] += int(completion.usage.get(key) or 0)
+                with tracing.tracer.start_as_current_span(
+                    "llm.call", record_exception=False, set_status_on_exception=False
+                ) as span:
+                    started = time.monotonic()
+                    try:
+                        completion, wrote_for_customer = await self._stream_once(
+                            messages, tools, turn, emit, spoke, model
+                        )
+                    except LLMError as exc:
+                        span.set_status(Status(StatusCode.ERROR, str(exc)[:200]))
+                        span.set_attribute("resolveai.llm.http_status", exc.status or 0)
+                        raise
+                    self._note_llm(turn, span, completion, messages, started, attempt, model)
                 return completion, wrote_for_customer
             except LLMError as exc:
                 wait = self._retry_wait(exc, attempt, turn, spoke[0])
@@ -534,7 +601,7 @@ class Agent:
         return wait
 
     async def _stream_once(
-        self, messages, tools, turn: _Turn, emit: Callable, spoke: list[bool]
+        self, messages, tools, turn: _Turn, emit: Callable, spoke: list[bool], model=None
     ) -> tuple[Completion, bool]:
         guard = CustomerTagGuard()
         said: list[str] = []
@@ -561,7 +628,9 @@ class Agent:
             self._say(turn, emit, text)
 
         blank_run = 0
-        async with aclosing(self.llm.stream(messages, tools, stop=[f"<{CUSTOMER_TAG}>"])) as stream:
+        routed = {"model": model} if model else {}  # only routing clients take `model`
+        stop = [f"<{CUSTOMER_TAG}>"]
+        async with aclosing(self.llm.stream(messages, tools, stop=stop, **routed)) as stream:
             async for event in stream:
                 if isinstance(event, TextDelta):
                     for ch in event.text:
@@ -595,6 +664,25 @@ class Agent:
     ) -> str:
         args = call.parsed_arguments()
         emit(ToolEvent(name=call.name, status="started"))
+        with self._tool_span(turn, call.name, source=source or "model") as span:
+            ok, payload = await self._tool_result(session, ctx, turn, call, args, emit)
+            span.set_attribute("resolveai.tool.ok", ok)
+            if not ok:
+                error = payload.get("error") or {}
+                span.set_attribute("resolveai.tool.error", str(error.get("code", "")))
+        self._log_tool(turn, call.name, args, ok=ok, payload=payload, phase="call", source=source)
+        emit(ToolEvent(name=call.name, status="finished", ok=ok))
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    async def _tool_result(
+        self,
+        session: AgentSession,
+        ctx: ToolContext,
+        turn: _Turn,
+        call: ToolCall,
+        args: dict[str, Any],
+        emit: Callable,
+    ) -> tuple[bool, dict[str, Any]]:
         missing = (
             ungrounded_identity(args, self._customer_texts(session, turn))
             if call.name == "verify_customer"
@@ -642,9 +730,7 @@ class Agent:
                     "hint": f"There is no tool named {call.name!r}.",
                 }
             }
-        self._log_tool(turn, call.name, args, ok=ok, payload=payload, phase="call", source=source)
-        emit(ToolEvent(name=call.name, status="finished", ok=ok))
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        return ok, payload
 
     async def _fail(
         self,
@@ -731,6 +817,8 @@ class Agent:
         turn.tool_log.append(json.dumps(entry, ensure_ascii=False, default=str))
 
     def _say(self, turn: _Turn, emit: Callable, text: str) -> None:
+        if turn.first_text_at is None and text.strip():
+            turn.first_text_at = time.monotonic()
         turn.spoken.append(text)
         emit(TokenEvent(text=text))
 
@@ -836,15 +924,121 @@ class Agent:
         session.history.append(entry)
         session.history = session.history[-self.config.history_turns :]
 
-    async def _record(self, db: AsyncSession, session: AgentSession, turn: _Turn, text: str):
+    # --- observability --------------------------------------------------------------------
+
+    @contextmanager
+    def _tool_span(self, turn: _Turn, name: str, *, source: str) -> Iterator[Span]:
+        started = time.monotonic()
+        attributes = {"resolveai.tool.name": name, "resolveai.tool.source": source}
+        with tracing.tracer.start_as_current_span(f"tool.{name}", attributes=attributes) as span:
+            try:
+                yield span
+            finally:
+                turn.tool_calls += 1
+                turn.tool_ms += (time.monotonic() - started) * 1000
+
+    def _note_llm(
+        self,
+        turn: _Turn,
+        span: Span,
+        completion: Completion,
+        messages: list[dict[str, Any]],
+        started: float,
+        attempt: int,
+        routed_model: str | None = None,
+    ) -> None:
+        """Add one model call to the turn's totals and describe it on its span."""
+        elapsed_ms = (time.monotonic() - started) * 1000
+        first_ms = (
+            round(completion.first_token_s * 1000, 1)
+            if completion.first_token_s is not None
+            else None
+        )
+        if first_ms is not None:
+            tracing.record_span("llm.first_token", started, started + first_ms / 1000)
+        model = routed_model or getattr(self.llm, "model", None) or "unknown"
+        usage = completion.usage
+        cost = metrics.cost_usd(model, usage, self.config.llm_prices)
+        turn.usage["llm_calls"] += 1
+        for key in ("prompt_tokens", "completion_tokens"):
+            turn.usage[key] += int(usage.get(key) or 0)
+        turn.cached_tokens += tracing.cached_tokens(usage)
+        turn.llm_ms += elapsed_ms
+        turn.model = model
+        if turn.llm_first_token_ms is None:
+            turn.llm_first_token_ms = first_ms
+        if cost is not None:
+            turn.cost_usd = (turn.cost_usd or 0.0) + cost
+        span.set_attributes(
+            tracing.generation_attributes(
+                model=model,
+                usage=usage,
+                cost_usd=cost,
+                prompt_version=self.prompts.version,
+                prompt_fingerprint=self.prompts.fingerprint,
+                first_token_ms=first_ms,
+                attempt=attempt,
+                finish_reason=completion.finish_reason,
+            )
+        )
+        if tracing.capture_content:
+            span.set_attribute("langfuse.observation.input", json.dumps(messages, default=str))
+            calls = [{"name": c.name, "arguments": c.arguments} for c in completion.tool_calls]
+            output = {"text": completion.text, "tool_calls": calls}
+            span.set_attribute("langfuse.observation.output", json.dumps(output))
+
+    async def _record_metrics(
+        self, session: AgentSession, turn: _Turn, span: Span, turn_index: int | None
+    ) -> None:
+        if turn.done is not None:
+            outcome = turn.done.outcome
+        else:
+            outcome = "interrupted" if turn.interrupted else "failed"
+        values = {
+            "outcome": outcome,
+            "llm_calls": turn.usage["llm_calls"],
+            "prompt_tokens": turn.usage["prompt_tokens"],
+            "completion_tokens": turn.usage["completion_tokens"],
+            "cached_tokens": turn.cached_tokens,
+            "cost_usd": round(turn.cost_usd, 8) if turn.cost_usd is not None else None,
+            "llm_first_token_ms": turn.llm_first_token_ms,
+            "llm_ms": round(turn.llm_ms, 1),
+            "tool_calls": turn.tool_calls,
+            "tool_ms": round(turn.tool_ms, 1),
+            "agent_ms": round((time.monotonic() - turn.started) * 1000, 1),
+        }
+        span.set_attributes(
+            {f"resolveai.turn.{k}": v for k, v in values.items() if v is not None}
+            | {"resolveai.prompt.version": self.prompts.version}
+        )
+        log.info("turn finished", extra={k: v for k, v in values.items() if v is not None})
         if session.conversation_id is None:
             return
+        await metrics.save_quietly(
+            self.db_factory,
+            turn.turn_id,
+            conversation_id=session.conversation_id,
+            started_at=self.clock(),
+            turn_index=turn_index,
+            channel=str(session.channel),
+            model=turn.model,
+            prompt_version=self.prompts.fingerprint,
+            trace_id=tracing.trace_id_hex(session.conversation_id),
+            **values,
+        )
+
+    async def _record(
+        self, db: AsyncSession, session: AgentSession, turn: _Turn, text: str
+    ) -> int | None:
+        """Write the turn to the transcript; returns the customer line's turn index."""
+        if session.conversation_id is None:
+            return None
         reply = self._spoken(turn) + (" [interrupted]" if turn.interrupted else "")
         entries = [(TurnRole.CUSTOMER, text)]
         entries += [(TurnRole.TOOL, line) for line in turn.tool_log]
         entries.append((TurnRole.ASSISTANT, reply.strip()))
         await db.rollback()
-        await transcript.record_turns(
+        return await transcript.record_turns(
             db, session.conversation_id, entries, state=session.state, now=self.clock()
         )
 

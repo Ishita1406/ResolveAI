@@ -14,12 +14,17 @@ was already said is kept in history.
 Failures: STT or TTS trouble is said once, the provider is reconnected once, and a second
 failure hands the call to a person (escalation.py). LLM failures are the agent's own
 (Step 5: "One moment, please", one retry, then a handoff), so they're spoken like any reply.
+
+Timing: each turn is a span in the conversation's trace, starting at the customer's last
+voiced frame, with child spans for the end-of-turn wait, the final transcript and TTS first
+audio (the agent adds its own). Time to first audio and its stages go to turn_metrics.
 """
 
 import asyncio
 import contextlib
 import logging
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -28,6 +33,8 @@ from typing import Any
 from app.agent.loop import Agent
 from app.config import Settings
 from app.domain.enums import ConversationChannel
+from app.observability import logs, tracing
+from app.observability import metrics as metrics_store
 from app.voice.audio import Chunker
 from app.voice.escalation import escalate_voice_failure
 from app.voice.speech import SentenceChunker, for_speech, normalize_transcript
@@ -96,11 +103,61 @@ class OutputBuffer:
 
 @dataclass
 class TurnMetrics:
+    """One turn's timeline (time.monotonic() values) and time to first audio.
+
+    end_of_speech → turn_end: the end-of-turn silence wait (VAD); → text_ready: the final
+    transcript (STT); → first_token: the agent's first reply text; → tts_sent: the first text
+    sent to TTS (a whole sentence, or the whole reply with tts_streaming "reply"); →
+    first_audio: its first audio. A filler can be heard before the reply."""
+
     text: str
-    end_of_speech: float  # monotonic time the turn was handed to the agent
-    first_audio_ms: float | None = None
+    end_of_speech: float  # the customer's last voiced frame
+    turn_end: float = 0.0  # end of turn decided
+    text_ready: float = 0.0  # final transcript handed to the agent
+    turn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    first_token: float | None = None
+    first_sentence: float | None = None
+    tts_sent: float | None = None  # the first sentence sent to TTS
+    first_audio: float | None = None
+    first_audio_ms: float | None = None  # end of speech → first agent audio of any kind
+    first_audio_source: str | None = None  # "reply" or "filler"
     filler: bool = False
     interrupted: bool = False
+
+    def stages(self) -> dict[str, float | None]:
+        """Milliseconds per stage. They add up to first_audio_ms when the reply's own speech
+        was heard first."""
+
+        def ms(start: float | None, end: float | None) -> float | None:
+            return round((end - start) * 1000, 1) if start and end else None
+
+        return {
+            "vad_ms": ms(self.end_of_speech, self.turn_end),
+            "stt_ms": ms(self.turn_end, self.text_ready),
+            "agent_first_text_ms": ms(self.text_ready, self.first_token),
+            "first_sentence_ms": ms(self.first_token, self.tts_sent),
+            "tts_first_audio_ms": ms(self.tts_sent, self.first_audio),
+        }
+
+    def summary(self) -> dict:
+        return {
+            "turn_id": self.turn_id,
+            "text": self.text,
+            "first_audio_ms": self.first_audio_ms,
+            "first_audio_source": self.first_audio_source,
+            **self.stages(),
+            "filler": self.filler,
+            "interrupted": self.interrupted,
+        }
+
+    def mark_first_audio(self, source: str) -> bool:
+        """True the first time any agent audio for this turn is queued."""
+        if self.first_audio_ms is not None:
+            return False
+        self.first_audio = time.monotonic()
+        self.first_audio_ms = round((self.first_audio - self.end_of_speech) * 1000, 1)
+        self.first_audio_source = source
+        return True
 
 
 @dataclass
@@ -161,6 +218,7 @@ class VoiceSession:
         )
         self.on_event = on_event or (lambda event: None)
         self.session_id: str | None = None
+        self.conversation_id: int | None = None
         self.out = OutputBuffer(settings.tts_sample_rate)
         self.metrics: list[TurnMetrics] = []
         self.ended = asyncio.Event()  # handed over or closed: no more turns
@@ -182,12 +240,16 @@ class VoiceSession:
         self._filler_index = 0
         self._stt_lock = asyncio.Lock()
         self._end_task: asyncio.Task | None = None
+        self._writes: set[asyncio.Task] = set()  # turn metrics being saved
 
     # --- lifecycle ------------------------------------------------------------------------
 
     async def start(self) -> str:
         session = await self.agent.start_session(channel=ConversationChannel.VOICE)
         self.session_id = session.session_id
+        self.conversation_id = session.conversation_id
+        # Before any task is created, so every task of this call logs with these ids.
+        logs.bind(conversation_id=self.conversation_id, session_id=self.session_id)
         try:
             self._tts = await self._connect_tts()
             self._stt = await self._connect_stt()
@@ -199,6 +261,10 @@ class VoiceSession:
             asyncio.create_task(self._stt_loop()),
             asyncio.create_task(self._cache_phrases()),
         ]
+        warm = getattr(self.agent.llm, "warm", None)
+        if self.settings.llm_prewarm and warm is not None:
+            # The customer is still speaking: open the LLM connection now, not in the turn.
+            self._tasks.append(asyncio.create_task(warm()))
         self._emit({"type": "listening", "session_id": self.session_id})
         return self.session_id
 
@@ -220,6 +286,11 @@ class VoiceSession:
             if closer is not None:
                 with contextlib.suppress(Exception):
                     await closer.close()
+        if self._writes:
+            await asyncio.wait(self._writes, timeout=5)
+        if self.session_id is not None:
+            with contextlib.suppress(Exception):
+                await self.agent.end_session(self.session_id)
 
     @property
     def busy(self) -> bool:
@@ -326,12 +397,14 @@ class VoiceSession:
             complete_ms=self.settings.end_of_turn_silence_ms,
             incomplete_ms=self.settings.incomplete_turn_silence_ms,
         )
-        too_long = time.monotonic() - self._turn_opened_at > self.settings.max_turn_s
+        now = time.monotonic()
+        too_long = now - self._turn_opened_at > self.settings.max_turn_s
         if silence_ms >= needed or too_long:
             self._closing_turn = True
-            self._end_task = asyncio.create_task(self._end_turn())
+            speech_end = now - silence_ms / 1000
+            self._end_task = asyncio.create_task(self._end_turn(speech_end, now))
 
-    async def _end_turn(self) -> None:
+    async def _end_turn(self, speech_end: float, turn_end: float) -> None:
         try:
             self._turn_open = False
             self.vad.end_turn()
@@ -348,9 +421,20 @@ class VoiceSession:
                 return
             self._empty_turns = 0
             self._emit({"type": "user", "text": text})
-            metrics = TurnMetrics(text=text, end_of_speech=time.monotonic())
+            metrics = TurnMetrics(
+                text=text, end_of_speech=speech_end, turn_end=turn_end, text_ready=time.monotonic()
+            )
             self.metrics.append(metrics)
-            self._turn_task = asyncio.create_task(self._respond(text, metrics))
+            span = None
+            if self.conversation_id is not None:
+                span = tracing.start_turn(
+                    self.conversation_id, start=speech_end, channel="voice", turn_id=metrics.turn_id
+                )
+                with tracing.activate(span):
+                    tracing.record_span("vad.end_of_turn", speech_end, turn_end)
+                    tracing.record_span("stt.final", turn_end, metrics.text_ready)
+            with tracing.activate(span) if span else contextlib.nullcontext():
+                self._turn_task = asyncio.create_task(self._respond(text, metrics, span))
         finally:
             self._closing_turn = False
 
@@ -412,14 +496,16 @@ class VoiceSession:
 
     # --- the agent's reply ----------------------------------------------------------------
 
-    async def _respond(self, text: str, metrics: TurnMetrics) -> None:
+    async def _respond(self, text: str, metrics: TurnMetrics, span=None) -> None:
         speaker = _Speaker(self, metrics)
         chunker = SentenceChunker()
         filler: asyncio.Task | None = None
         try:
-            async for event in self.agent.respond(self.session_id, text):
+            async for event in self.agent.respond(self.session_id, text, turn_id=metrics.turn_id):
                 self._emit(event.model_dump(mode="json"))
                 if event.type == "token":
+                    if metrics.first_token is None and event.text.strip():
+                        metrics.first_token = time.monotonic()
                     if filler and not filler.done():
                         filler.cancel()
                     for sentence in chunker.feed(event.text):
@@ -440,6 +526,51 @@ class VoiceSession:
             if filler and not filler.done():
                 filler.cancel()
             await speaker.close()
+            self._finish_turn(metrics, span)
+
+    def _finish_turn(self, metrics: TurnMetrics, span) -> None:
+        """End the turn's span and save its voice timings (in the background, so a barge-in
+        isn't held up by the database)."""
+        stages = metrics.stages()
+        log.info(
+            "voice turn timings",
+            extra={
+                "time_to_first_audio_ms": metrics.first_audio_ms,
+                "first_audio_source": metrics.first_audio_source,
+                "interrupted": metrics.interrupted,
+                **stages,
+            },
+        )
+        if span is not None:
+            span.set_attributes(
+                {
+                    f"resolveai.voice.{k}": v
+                    for k, v in {**stages, "time_to_first_audio_ms": metrics.first_audio_ms}.items()
+                    if v is not None
+                }
+                | {
+                    "resolveai.voice.filler": metrics.filler,
+                    "resolveai.voice.interrupted": metrics.interrupted,
+                    "resolveai.voice.first_audio_source": metrics.first_audio_source or "none",
+                }
+            )
+            span.end()
+        if self.conversation_id is None:
+            return
+        task = asyncio.create_task(
+            metrics_store.save_quietly(
+                self.agent.db_factory,
+                metrics.turn_id,
+                conversation_id=self.conversation_id,
+                channel="voice",
+                time_to_first_audio_ms=metrics.first_audio_ms,
+                filler=metrics.filler,
+                interrupted=metrics.interrupted,
+                **stages,
+            )
+        )
+        self._writes.add(task)
+        task.add_done_callback(self._writes.discard)
 
     async def _filler_after_delay(self, metrics: TurnMetrics) -> None:
         await asyncio.sleep(self.settings.filler_after_ms / 1000)
@@ -449,6 +580,8 @@ class VoiceSession:
         self._filler_index += 1
         metrics.filler = True
         await self._play_phrase(text)
+        if metrics.mark_first_audio("filler"):
+            self._emit({"type": "first_audio", "ms": metrics.first_audio_ms, "source": "filler"})
         self._emit({"type": "filler", "text": text})
 
     # --- handing over ---------------------------------------------------------------------
@@ -498,6 +631,8 @@ class _Speaker:
     def __init__(self, session: VoiceSession, metrics: TurnMetrics) -> None:
         self.s = session
         self.metrics = metrics
+        # tts_streaming "reply": hold every sentence until the reply is complete (baseline).
+        self.hold = session.settings.tts_streaming == "reply"
         self.epoch = session.out.epoch
         self.sentences: list[str] = []
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -514,21 +649,36 @@ class _Speaker:
         try:
             while (sentence := await self._queue.get()) is not None:
                 self._current = utterance = self.s._tts.utterance()
+                first = self.metrics.tts_sent is None
+                if first:
+                    self.metrics.tts_sent = time.monotonic()
                 await utterance.say(for_speech(sentence))
                 await utterance.finish()
                 async for chunk in utterance.audio():
-                    if self.metrics.first_audio_ms is None:
-                        self.metrics.first_audio_ms = round(
-                            (time.monotonic() - self.metrics.end_of_speech) * 1000, 1
+                    if first:
+                        first = False
+                        tracing.record_span(
+                            "tts.first_audio", self.metrics.tts_sent, time.monotonic()
                         )
-                        self.s._emit({"type": "first_audio", "ms": self.metrics.first_audio_ms})
+                    if self.metrics.mark_first_audio("reply"):
+                        self.s._emit(
+                            {
+                                "type": "first_audio",
+                                "ms": self.metrics.first_audio_ms,
+                                "source": "reply",
+                            }
+                        )
                     self.s.out.put(chunk, self.epoch)
                 self._current = None
         except TtsError as exc:
             self._failed = exc
 
     async def say(self, sentence: str) -> None:
+        if self.metrics.first_sentence is None:
+            self.metrics.first_sentence = time.monotonic()
         self.sentences.append(sentence)
+        if self.hold:
+            return
         if self._pump is None:
             self._start()
         if self._failed:
@@ -537,6 +687,9 @@ class _Speaker:
             self._queue.put_nowait(sentence)
 
     async def finish(self) -> None:
+        if self.hold and self._pump is None and self.sentences:
+            self._start()
+            self._queue.put_nowait(" ".join(self.sentences))
         if self._pump is None:
             return
         self._queue.put_nowait(None)

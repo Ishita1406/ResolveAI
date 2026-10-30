@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate voice-replay voice-fixtures
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate voice-replay voice-fixtures serve latency latency-db conversation
 
 up:
 	docker compose up -d --build
@@ -63,8 +63,30 @@ eval-adversarial:
 # GEMINI_API_KEY set runs the real providers. Example:
 #   make voice-fixtures && make voice-replay FILES="../voice-fixtures/customer-*.wav" ARGS=""
 voice-replay:
-	cd backend && uv run python -m app.voice.replay run $(FILES) --out-dir ../voice-replay $(if $(ARGS),$(ARGS),--fake --echo)
+	cd backend && uv run python -m app.voice.replay run $(FILES) --out-dir ../voice-replay $(if $(filter undefined,$(origin ARGS)),--fake --echo,$(ARGS))
 
 # Customer test audio spoken by Cartesia TTS (needs CARTESIA_API_KEY).
 voice-fixtures:
 	cd backend && uv run python -m app.voice.replay fixtures ../voice-fixtures
+
+# The API with JSON logs from the first line.
+serve:
+	cd backend && uv run uvicorn app.main:app --port 8000 --log-config log_config.json
+
+# p50/p95/p99 time to first audio and a per-stage breakdown over RUNS replays of FILES.
+# Offline by default (fake STT/TTS, a fixed-timing model stand-in); ARGS="" uses Cartesia
+# and Gemini. Example:
+#   make latency FILES="../voice-fixtures/customer-0*.wav" RUNS=10 LABEL=baseline
+# The stand-in's delays are gemini-3.6-flash's measured mean first token and tail (step 10).
+OFFLINE_LATENCY := --fake --paced-llm 3160,450
+latency:
+	cd backend && uv run python -m app.observability.latency run $(FILES) --runs $(or $(RUNS),5) --label "$(or $(LABEL),latest)" --out ../evals/latency/$(or $(LABEL),latest) $(if $(filter undefined,$(origin ARGS)),$(OFFLINE_LATENCY),$(ARGS))
+
+# The same report over turns already stored (live calls), e.g. SINCE=2026-10-30.
+latency-db:
+	cd backend && uv run python -m app.observability.latency db $(if $(SINCE),--since $(SINCE)) --channel voice --out ../evals/latency/stored
+
+# One conversation turn by turn: transcript, tool calls, policy decisions, timings.
+# make conversation ID=42 (or ID= to list recent ones). The web view: /admin/replay.
+conversation:
+	cd backend && uv run python -m app.observability.conversation $(if $(ID),$(ID),--list)

@@ -12,9 +12,12 @@ from app.agent.loop import Agent, AgentConfig
 from app.agent.prompts import load_prompts
 from app.agent.ratelimit import TokenRateLimiter
 from app.agent.session import RedisSessionStore
+from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
 from app.api.health import router as health_router
 from app.config import Settings, get_settings
+from app.observability import tracing
+from app.observability.logs import configure_logging
 from app.policy.config import get_policy
 from app.retrieval.chunking import policy_documents_text
 from app.retrieval.embedding import Embedder, embedder_from_settings
@@ -47,6 +50,7 @@ def build_llm(settings: Settings) -> GeminiClient | None:
         reasoning_effort=settings.llm_reasoning_effort or None,
         seed=settings.llm_seed,
         rate_limiter=limiter,
+        keepalive_s=settings.llm_keepalive_s,
     )
 
 
@@ -76,6 +80,8 @@ def build_agent(
         turn_timeout_s=settings.agent_turn_timeout_s,
         history_turns=settings.agent_history_turns,
         prefetch=settings.agent_prefetch,
+        llm_prices=settings.llm_prices,
+        fast_model=settings.llm_fast_model,
     )
     retriever, documents = None, None
     if settings.policy_context_mode == "retrieval":
@@ -119,6 +125,9 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved = settings or get_settings()
         app.state.settings = resolved
+        if settings is None:  # the real server; tests and the eval harness keep their logging
+            configure_logging(resolved.log_level, resolved.log_format)
+        tracing.setup_tracing(resolved)
         app.state.engine = create_async_engine(resolved.database_url(), pool_pre_ping=True)
         app.state.redis = Redis.from_url(resolved.redis_url)
         app.state.agent, owned_llm = build_agent(
@@ -134,11 +143,13 @@ def create_app(
                 await owned_llm.aclose()
             await app.state.redis.aclose()
             await app.state.engine.dispose()
+            tracing.shutdown_tracing()
 
     app = FastAPI(title="ResolveAI", lifespan=lifespan)
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(webrtc.router)
+    app.include_router(admin_router)
     return app
 
 

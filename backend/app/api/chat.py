@@ -18,6 +18,8 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.observability import logs
+
 router = APIRouter()
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ async def chat(ws: WebSocket) -> None:
     session_id = ws.query_params.get("session_id")
     if session_id is None or await agent.store.load(session_id) is None:
         session_id = (await agent.start_session()).session_id
+    logs.bind(session_id=session_id)
     await ws.send_json({"type": "session", "session_id": session_id})
 
     current: asyncio.Task | None = None
@@ -94,3 +97,5 @@ async def chat(ws: WebSocket) -> None:
         pass
     finally:
         await stop_current()
+        with suppress(Exception):
+            await agent.end_session(session_id)

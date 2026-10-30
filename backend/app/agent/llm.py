@@ -50,6 +50,8 @@ class Completion:
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    # Seconds from sending the request to the first streamed text or tool-call fragment.
+    first_token_s: float | None = None
 
 
 LLMEvent = TextDelta | Completion
@@ -81,6 +83,9 @@ def _retry_after(response: httpx.Response, detail: str) -> float | None:
 
 
 class LLMClient(Protocol):
+    """`model` overrides the client's model for one call; callers only pass it when model
+    routing is configured, so clients without routing needn't accept it."""
+
     def stream(
         self, messages: list[Message], tools: list[dict[str, Any]], *, stop: list[str] | None = None
     ) -> AsyncIterator[LLMEvent]: ...
@@ -156,6 +161,7 @@ class GeminiClient:
         seed: int | None = None,
         rate_limiter: TokenRateLimiter | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        keepalive_s: float = 5.0,
     ) -> None:
         self.model = model
         self.seed = seed  # best effort: the provider may still vary between runs
@@ -172,17 +178,33 @@ class GeminiClient:
             base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=httpx.Timeout(timeout_s, connect=5.0),
+            # Idle connections are kept this long for the next call; a new one costs a TCP
+            # and TLS handshake (step 10 measured this).
+            limits=httpx.Limits(keepalive_expiry=keepalive_s),
             transport=transport,  # tests pass a mock; production uses the default
         )
 
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    async def warm(self) -> None:
+        """Open a connection ahead of the first real call (a model list request: no tokens).
+        Failures are ignored; the real call will report them."""
+        try:
+            await self._http.get("/models")
+        except httpx.HTTPError:
+            pass
+
     async def stream(
-        self, messages: list[Message], tools: list[dict[str, Any]], *, stop: list[str] | None = None
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        *,
+        stop: list[str] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[LLMEvent]:
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": self.temperature,
             "stream": True,
@@ -206,6 +228,7 @@ class GeminiClient:
         finish_reason = None
         usage: dict[str, Any] = {}
         booking = None
+        first_token_s: float | None = None
         prompt_estimate = estimate_prompt_tokens(messages, tools)
         if self.rate_limiter is not None:
             started = time.monotonic()
@@ -213,6 +236,7 @@ class GeminiClient:
                 int(prompt_estimate * self._prompt_ratio) + (self.max_completion_tokens or 1024)
             )
             self.rate_limit_wait_s += time.monotonic() - started
+        sent = time.monotonic()
         try:
             async with self._http.stream("POST", "/chat/completions", json=body) as response:
                 if response.status_code >= 400:
@@ -236,6 +260,10 @@ class GeminiClient:
                     usage = chunk.get("usage") or usage
                     for choice in chunk.get("choices", []):
                         delta = choice.get("delta") or {}
+                        if first_token_s is None and (
+                            delta.get("content") or delta.get("tool_calls")
+                        ):
+                            first_token_s = time.monotonic() - sent
                         if delta.get("content"):
                             text.append(delta["content"])
                             yield TextDelta(delta["content"])
@@ -252,5 +280,9 @@ class GeminiClient:
             if prompt and prompt_estimate:
                 self._prompt_ratio = 0.7 * self._prompt_ratio + 0.3 * (prompt / prompt_estimate)
         yield Completion(
-            text="".join(text), tool_calls=calls.build(), finish_reason=finish_reason, usage=usage
+            text="".join(text),
+            tool_calls=calls.build(),
+            finish_reason=finish_reason,
+            usage=usage,
+            first_token_s=first_token_s,
         )

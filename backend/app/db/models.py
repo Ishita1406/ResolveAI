@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Computed,
     DateTime,
+    Double,
     Enum,
     ForeignKey,
     Identity,
@@ -289,6 +290,52 @@ class ConversationTurn(Base):
         UniqueConstraint("conversation_id", "turn_index"),
         CheckConstraint("turn_index >= 0", name="turn_index_non_negative"),
     )
+
+
+class TurnMetric(Base):
+    """Timings, usage and cost of one customer turn, keyed by the turn id the agent and the
+    voice layer share. Each writes its own columns (app/observability/metrics.py), so a text
+    turn has no voice columns, and a voice turn's row is complete once both have written.
+
+    Voice stages, which add up to time_to_first_audio_ms when the reply's own speech is
+    the first thing heard: vad (customer's last voiced frame → end of turn decided), stt (→
+    final transcript), agent_first_text (→ first reply token), first_sentence (→ first
+    sentence ready for TTS), tts_first_audio (→ its first audio)."""
+
+    __tablename__ = "turn_metrics"
+
+    turn_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    started_at: Mapped[datetime | None]
+    # The customer's line in conversation_turns (links the timings to the transcript).
+    turn_index: Mapped[int | None]
+    channel: Mapped[str | None] = mapped_column(String(16))
+    # Agent
+    outcome: Mapped[str | None] = mapped_column(String(16))
+    model: Mapped[str | None] = mapped_column(String(80))
+    prompt_version: Mapped[str | None] = mapped_column(String(40))
+    llm_calls: Mapped[int | None]
+    prompt_tokens: Mapped[int | None]
+    completion_tokens: Mapped[int | None]
+    cached_tokens: Mapped[int | None]
+    cost_usd: Mapped[float | None] = mapped_column(Double)
+    llm_first_token_ms: Mapped[float | None] = mapped_column(Double)  # first model call
+    llm_ms: Mapped[float | None] = mapped_column(Double)  # all model calls
+    tool_calls: Mapped[int | None]
+    tool_ms: Mapped[float | None] = mapped_column(Double)
+    agent_ms: Mapped[float | None] = mapped_column(Double)  # the whole turn, in the agent
+    # Voice
+    vad_ms: Mapped[float | None] = mapped_column(Double)
+    stt_ms: Mapped[float | None] = mapped_column(Double)
+    agent_first_text_ms: Mapped[float | None] = mapped_column(Double)
+    first_sentence_ms: Mapped[float | None] = mapped_column(Double)
+    tts_first_audio_ms: Mapped[float | None] = mapped_column(Double)
+    time_to_first_audio_ms: Mapped[float | None] = mapped_column(Double)
+    filler: Mapped[bool | None]
+    interrupted: Mapped[bool | None]
+    trace_id: Mapped[str | None] = mapped_column(String(32))
 
 
 class Ticket(Base):

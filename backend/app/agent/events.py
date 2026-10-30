@@ -45,6 +45,8 @@ class DoneEvent(BaseModel):
     iterations: int
     # This turn's model usage: prompt_tokens, completion_tokens, llm_calls (for cost reports).
     usage: dict[str, int] = Field(default_factory=dict)
+    # The turn's id in turn_metrics (and on its trace span), for the replay view.
+    turn_id: str | None = None
 
 
 AgentEvent = TokenEvent | ToolEvent | ActionEvent | EscalationEvent | ErrorEvent | DoneEvent

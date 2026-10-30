@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResolveAI replay</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #0f766e;
+          --card: #ffffff; --ok: #15803d; --bad: #b91c1c;
+          --s1: #0f766e; --s2: #0369a1; --s3: #7c3aed; --s4: #c2410c; --s5: #a16207; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --accent: #2dd4bf;
+            --card: #292524; --ok: #4ade80; --bad: #f87171;
+            --s1: #2dd4bf; --s2: #38bdf8; --s3: #a78bfa; --s4: #fb923c; --s5: #facc15; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.note { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  input, select, button { font: inherit; padding: 6px 10px; border-radius: 8px;
+                          border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  button { background: var(--accent); color: white; cursor: pointer; }
+  input[type=password] { flex: 1 1 200px; }
+  select { flex: 1 1 260px; min-width: 0; }
+  .meta { color: var(--muted); font-size: 14px; margin-bottom: 12px; overflow-wrap: anywhere; }
+  .turn { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 12px 14px; margin-bottom: 12px; }
+  .who { font-weight: 600; margin-right: 6px; }
+  .say { margin: 2px 0; overflow-wrap: anywhere; }
+  .sub { color: var(--muted); font-size: 13px; margin: 6px 0 0; overflow-wrap: anywhere; }
+  .sub code { font-size: 12px; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin-top: 8px;
+         background: var(--line); }
+  .bar span { display: block; height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted);
+            margin-top: 4px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; }
+  #error { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Conversation replay</h1>
+  <p class="note">Transcript, tool calls, policy decisions and timings for one conversation.</p>
+  <form id="pick">
+    <input type="password" id="token" placeholder="Admin token (if ADMIN_TOKEN is set)" autocomplete="off">
+    <select id="list" aria-label="Recent conversations"></select>
+    <input type="number" id="cid" placeholder="ID" min="1" style="width: 90px">
+    <button type="submit">Show</button>
+  </form>
+  <div id="error"></div>
+  <div id="view"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+// Customer text is untrusted: everything goes in via textContent, never innerHTML.
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
+const STAGES = [
+  ["vad_ms", "end of turn (VAD)", "--s1"], ["stt_ms", "final transcript", "--s2"],
+  ["agent_first_text_ms", "agent to first text", "--s3"], ["first_sentence_ms", "first sentence", "--s4"],
+  ["tts_first_audio_ms", "TTS first audio", "--s5"],
+];
+const ms = (v) => v == null ? "-" : `${Math.round(v).toLocaleString()} ms`;
+
+function headers() {
+  let token = "";
+  try { token = sessionStorage.getItem("adminToken") || ""; } catch (e) {}
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+async function api(path) {
+  const r = await fetch(path, { headers: headers() });
+  if (!r.ok) throw new Error(`${r.status}: ${(await r.json().catch(() => ({}))).detail || r.statusText}`);
+  return r.json();
+}
+
+async function loadList() {
+  const rows = await api("/admin/conversations?limit=50");
+  const list = $("list");
+  list.replaceChildren(el("option", null, "Recent conversations"));
+  for (const r of rows) {
+    const o = el("option", null, `#${r.id} · ${r.channel} · ${r.customer || "unverified"} · ${new Date(r.started_at).toLocaleString()}`);
+    o.value = r.id;
+    list.append(o);
+  }
+}
+
+function stageBar(t) {
+  const total = STAGES.reduce((s, [k]) => s + (t[k] || 0), 0);
+  if (!total) return null;
+  const bar = el("div", "bar");
+  for (const [k, label, color] of STAGES) {
+    if (!t[k]) continue;
+    const seg = el("span");
+    seg.style.width = `${(100 * t[k]) / total}%`;
+    seg.style.background = `var(${color})`;
+    seg.title = `${label}: ${ms(t[k])}`;
+    bar.append(seg);
+  }
+  return bar;
+}
+
+function render(data) {
+  const view = $("view");
+  view.replaceChildren();
+  const c = data.conversation;
+  view.append(el("div", "meta",
+    `#${c.id} · ${c.channel} · ${c.customer ? c.customer.name : "not verified"} · started ${new Date(c.started_at).toLocaleString()}` +
+    (c.ended_at ? ` · ended ${new Date(c.ended_at).toLocaleString()}` : "") + ` · trace ${data.trace_id}`));
+  const tot = data.totals;
+  view.append(el("div", "meta",
+    `${tot.llm_calls} model calls · ${tot.prompt_tokens}+${tot.completion_tokens} tokens` +
+    (tot.cost_usd != null ? ` · $${tot.cost_usd}` : "") +
+    (tot.time_to_first_audio_ms ? ` · first audio ${ms(tot.time_to_first_audio_ms.min)}–${ms(tot.time_to_first_audio_ms.max)}` : "")));
+  for (const turn of data.turns) {
+    const card = el("div", "turn");
+    const you = el("p", "say"); you.append(el("span", "who", "Customer:"), document.createTextNode(turn.customer ?? "")); card.append(you);
+    for (const call of turn.tool_calls) {
+      const p = el("p", "sub");
+      p.append(document.createTextNode(`tool ${call.tool} [${call.phase}${call.source ? ", " + call.source : ""}] `));
+      p.append(el("code", null, JSON.stringify(call.arguments || {})));
+      p.append(document.createTextNode(" → "));
+      p.append(el("span", call.ok ? "ok" : "bad", call.ok ? "ok" : `failed (${call.error || call.status || "?"})`));
+      card.append(p);
+    }
+    for (const d of turn.policy_decisions) {
+      card.append(el("p", "sub", `policy ${d.stage} ${d.tool}: ${d.verdict} (${d.rule}) ${d.message}`));
+    }
+    const agent = el("p", "say"); agent.append(el("span", "who", "Agent:"), document.createTextNode(turn.assistant ?? "")); card.append(agent);
+    const t = turn.timings;
+    if (t) {
+      const bits = [];
+      if (t.time_to_first_audio_ms != null) bits.push(`first audio ${ms(t.time_to_first_audio_ms)}`);
+      bits.push(`LLM first token ${ms(t.llm_first_token_ms)}`, `LLM ${ms(t.llm_ms)} (${t.llm_calls} calls)`,
+                `tools ${ms(t.tool_ms)} (${t.tool_calls})`, `${t.prompt_tokens}+${t.completion_tokens} tokens`);
+      if (t.cost_usd != null) bits.push(`$${t.cost_usd}`);
+      if (t.filler) bits.push("filler"); if (t.interrupted) bits.push("interrupted");
+      card.append(el("p", "sub", bits.join(" · ")));
+      const bar = stageBar(t);
+      if (bar) {
+        card.append(bar);
+        const legend = el("div", "legend");
+        for (const [k, label, color] of STAGES) if (t[k] != null) {
+          const item = el("span"); const sw = el("i"); sw.style.background = `var(${color})`;
+          item.append(sw, document.createTextNode(`${label} ${ms(t[k])}`)); legend.append(item);
+        }
+        card.append(legend);
+      }
+    }
+    view.append(card);
+  }
+  for (const tk of data.tickets) view.append(el("div", "meta", `Ticket ${tk.reference} (${tk.category}, ${tk.status}): ${tk.summary}`));
+}
+
+async function show(id) {
+  $("error").textContent = "";
+  try {
+    render(await api(`/admin/conversations/${encodeURIComponent(id)}`));
+    history.replaceState(null, "", `?id=${encodeURIComponent(id)}`);
+  } catch (e) { $("error").textContent = e.message; }
+}
+
+$("token").addEventListener("change", () => {
+  try { sessionStorage.setItem("adminToken", $("token").value); } catch (e) {}
+  loadList().catch((e) => { $("error").textContent = e.message; });
+});
+$("list").addEventListener("change", () => { if ($("list").value) { $("cid").value = $("list").value; show($("list").value); } });
+$("pick").addEventListener("submit", (ev) => { ev.preventDefault(); if ($("cid").value) show($("cid").value); });
+
+loadList().catch((e) => { $("error").textContent = e.message; });
+const initial = new URLSearchParams(location.search).get("id");
+if (initial) { $("cid").value = initial; show(initial); }
+</script>
+</body>
+</html>

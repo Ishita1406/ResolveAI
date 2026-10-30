@@ -19,4 +19,5 @@ RUN useradd --create-home --uid 10001 app \
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+# log_config.json: JSON lines from the first one (the app takes over once it starts).
+CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--log-config", "log_config.json"]
