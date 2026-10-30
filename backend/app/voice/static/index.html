@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResolveAI voice</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #0f766e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --accent: #2dd4bf; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.note { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--accent); color: white; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin-left: 12px; color: var(--muted); }
+  #log { margin-top: 16px; border-top: 1px solid var(--line); }
+  .line { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .who { font-weight: 600; margin-right: 6px; }
+  .sys { color: var(--muted); font-size: 14px; }
+  #partial { color: var(--muted); font-style: italic; min-height: 1.5em; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ResolveAI voice</h1>
+  <p class="note">Talk to the support agent. Interrupt it any time by speaking.</p>
+  <button id="start">Start call</button>
+  <button id="stop" disabled>Hang up</button>
+  <span id="status">idle</span>
+  <div id="partial"></div>
+  <div id="log"></div>
+  <audio id="agent" autoplay></audio>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let pc = null, stream = null, agentLine = null;
+
+function line(who, text, cls) {
+  const div = document.createElement("div");
+  div.className = "line" + (cls ? " " + cls : "");
+  if (who) { const b = document.createElement("span"); b.className = "who"; b.textContent = who; div.append(b); }
+  div.append(document.createTextNode(text));
+  $("log").append(div);
+  return div;
+}
+
+function onEvent(e) {
+  switch (e.type) {
+    case "partial": $("partial").textContent = e.text; break;
+    case "user": $("partial").textContent = ""; line("You:", e.text); agentLine = null; break;
+    case "token":
+      if (!agentLine) agentLine = line("Agent:", "");
+      agentLine.append(document.createTextNode(e.text)); break;
+    case "barge_in": line("", "(interrupted)", "sys"); agentLine = null; break;
+    case "filler": line("", `(filler: ${e.text})`, "sys"); break;
+    case "first_audio": $("status").textContent = `first audio after ${e.ms} ms`; break;
+    case "handed_over": line("", `Handed to a colleague: ${e.reference || "no reference"}`, "sys"); break;
+    case "error": line("", `(${e.code})`, "sys"); break;
+  }
+}
+
+async function start() {
+  $("start").disabled = true; $("status").textContent = "connecting…";
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  pc = new RTCPeerConnection();
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  pc.ontrack = (ev) => { $("agent").srcObject = ev.streams[0] || new MediaStream([ev.track]); };
+  const events = pc.createDataChannel("events");
+  events.onmessage = (m) => onEvent(JSON.parse(m.data));
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve) => {  // no trickle ICE: send the offer with all candidates
+    if (pc.iceGatheringState === "complete") return resolve();
+    pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && resolve());
+  });
+  const res = await fetch("/voice/offer", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }) });
+  if (!res.ok) { $("status").textContent = (await res.json()).detail || "failed"; return stop(); }
+  await pc.setRemoteDescription(await res.json());
+  $("status").textContent = "listening"; $("stop").disabled = false;
+}
+
+function stop() {
+  if (pc) pc.close(); if (stream) stream.getTracks().forEach((t) => t.stop());
+  pc = stream = null; $("start").disabled = false; $("stop").disabled = true;
+}
+
+$("start").onclick = () => start().catch((e) => { $("status").textContent = e.message; stop(); });
+$("stop").onclick = stop;
+</script>
+</body>
+</html>

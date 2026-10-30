@@ -9,3 +9,7 @@ htmlcov/
 node_modules/
 dist/
 build/
+
+# Voice replay output and generated test audio
+voice-replay/
+voice-fixtures/

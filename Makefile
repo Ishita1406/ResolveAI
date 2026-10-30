@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate voice-replay voice-fixtures
 
 up:
 	docker compose up -d --build
@@ -57,3 +57,14 @@ eval-gate:
 # The 60-scenario adversarial suite.
 eval-adversarial:
 	cd backend && PYTHONPATH=../evals uv run python -m harness run --tags adversarial $(ARGS)
+
+# Voice pipeline on recorded audio (no microphone). FILES: WAVs, one customer turn each.
+# Offline by default (fake STT/TTS, echo LLM); ARGS="" with CARTESIA_API_KEY and
+# GROQ_API_KEY set runs the real providers. Example:
+#   make voice-fixtures && make voice-replay FILES="../voice-fixtures/customer-*.wav" ARGS=""
+voice-replay:
+	cd backend && uv run python -m app.voice.replay run $(FILES) --out-dir ../voice-replay $(if $(ARGS),$(ARGS),--fake --echo)
+
+# Customer test audio spoken by Cartesia TTS (needs CARTESIA_API_KEY).
+voice-fixtures:
+	cd backend && uv run python -m app.voice.replay fixtures ../voice-fixtures

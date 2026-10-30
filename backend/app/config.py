@@ -64,6 +64,37 @@ class Settings(BaseSettings):
     retrieval_candidates: int = 20  # per ranking, before fusion
     retrieval_rrf_k: int = 60  # reciprocal rank fusion constant
 
+    # Voice (app/voice/). Cartesia Ink (streaming STT) and Sonic (streaming TTS), per the brief.
+    cartesia_api_key: SecretStr | None = None
+    cartesia_base_url: str = "wss://api.cartesia.ai"
+    cartesia_version: str = "2026-08-14"
+    cartesia_stt_model: str = "ink-2"
+    cartesia_tts_model: str = "sonic-3.6"
+    # The example voice from Cartesia's API reference; set CARTESIA_VOICE_ID to your own.
+    cartesia_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"
+    cartesia_language: str = "en"
+    tts_sample_rate: int = 24000
+    # Silero VAD v5 (ONNX, run with onnxruntime), downloaded once and checked by hash.
+    vad_model_url: str = (
+        "https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx"
+    )
+    vad_model_sha256: str = "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f"
+    vad_cache_dir: Path = Path.home() / ".cache" / "resolveai" / "silero"
+    vad_threshold: float = 0.5  # speech probability that starts speech
+    vad_min_speech_ms: int = 160  # speech this long starts a turn (and interrupts the agent)
+    # End of turn: silence needed after speech. Longer when the words so far sound unfinished
+    # ("my order number is ...", a half-said PIN), so customers aren't cut off mid-sentence.
+    end_of_turn_silence_ms: int = 600
+    incomplete_turn_silence_ms: int = 1600
+    max_turn_s: float = 30.0
+    filler_after_ms: int = 500  # say a short filler if a tool runs longer than this
+    stt_connect_timeout_s: float = 5.0
+    stt_final_wait_ms: int = 400  # after our end of turn, wait this long for the last words
+    tts_first_audio_timeout_s: float = 5.0
+    # ICE servers for WebRTC, e.g. ["stun:stun.l.google.com:19302"]. Empty: host candidates
+    # only, which is enough on localhost and a LAN.
+    webrtc_ice_servers: list[str] = []
+
     def database_url(self, driver: str = "postgresql+psycopg") -> URL:
         # URL.create (not a string) so passwords with special characters need no escaping,
         # and a host starting with "/" is passed through to libpq as a Unix socket directory.

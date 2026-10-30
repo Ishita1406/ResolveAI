@@ -19,6 +19,7 @@ from app.policy.config import get_policy
 from app.retrieval.chunking import policy_documents_text
 from app.retrieval.embedding import Embedder, embedder_from_settings
 from app.retrieval.search import PolicyRetriever
+from app.voice import webrtc
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved = settings or get_settings()
+        app.state.settings = resolved
         app.state.engine = create_async_engine(resolved.database_url(), pool_pre_ping=True)
         app.state.redis = Redis.from_url(resolved.redis_url)
         app.state.agent, owned_llm = build_agent(
@@ -126,6 +128,7 @@ def create_app(
         try:
             yield
         finally:
+            await webrtc.close_all(app)
             if owned_llm is not None:
                 await owned_llm.aclose()
             await app.state.redis.aclose()
@@ -134,6 +137,7 @@ def create_app(
     app = FastAPI(title="ResolveAI", lifespan=lifespan)
     app.include_router(health_router)
     app.include_router(chat_router)
+    app.include_router(webrtc.router)
     return app
 
 
