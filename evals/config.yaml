@@ -1,44 +1,43 @@
-# Eval harness configuration (python -m harness run). Secrets come from .env (GROQ_API_KEY).
+# Eval harness configuration (python -m harness run). Secrets come from .env (GEMINI_API_KEY).
 
 runs_per_scenario: 3       # LLM output varies: every scenario runs this many times
-# Parallel runs, each with its own database and app instance. 1 suits Groq's free tier
-# (8K TPM fits about one conversation at a time); raise it with rate_limits on a paid plan.
+# Parallel runs, each with its own database and app instance. 1 suits Gemini's free tier
+# (its requests-per-minute cap fits about one conversation at a time); raise it on a paid tier.
 concurrency: 1
 seed: 20261029             # base seed; each run's seed = hash(seed, scenario id, run index)
 policy_context_mode: null  # null: the app's POLICY_CONTEXT_MODE; or retrieval | full_text
 
 agent:
-  model: null              # null: the app's GROQ_MODEL (what production uses)
+  model: null              # null: the app's GEMINI_MODEL (what production uses)
   temperature: null        # null: the app's LLM_TEMPERATURE
   # Longer than production's 30 s: with several runs sharing one rate limit, waiting for
   # quota happens inside a turn. Latency is measured separately (milestone 4), not here.
   turn_timeout_s: 120
 
 customer:                  # the simulated customer
-  model: openai/gpt-oss-20b
+  model: gemini-3.8-flash-lite
   temperature: 0.6
   max_completion_tokens: 300
-  reasoning_effort: low
+  reasoning_effort: none
 
 judge:
   enabled: true
-  model: openai/gpt-oss-120b
+  model: gemini-3.8-flash
   temperature: 0
-  max_completion_tokens: 800
+  # Includes thinking tokens ("low" is a ~1K-token thinking budget on Gemini 2.5).
+  max_completion_tokens: 2000
   reasoning_effort: low
   rubric: rubrics/judge-v1.md
 
-# Client-side tokens per minute per model, shared by all runs. Match your Groq plan:
-# the free tier allowed 8,000 TPM for gpt-oss-120b when this was written; the Developer plan
-# lists 250,000 (console.groq.com/docs/models).
-rate_limits:
-  openai/gpt-oss-120b: 8000
-  openai/gpt-oss-20b: 8000
+# Client-side tokens per minute per model, shared by all runs. Gemini's free tier is bound
+# by requests per minute and per day rather than tokens, so none are set; add them to match
+# your tier (aistudio.google.com, rate limits), e.g. gemini-3.8-flash: 250000.
+rate_limits: {}
 
-# USD per million tokens, from console.groq.com/docs/models (checked 2026-10-29).
+# USD per million tokens (paid tier; output includes thinking). Check ai.google.dev/pricing.
 prices:
-  openai/gpt-oss-120b: {input: 0.15, output: 0.60}
-  openai/gpt-oss-20b: {input: 0.075, output: 0.30}
+  gemini-3.8-flash: {input: 0.30, output: 2.50}
+  gemini-3.8-flash-lite: {input: 0.10, output: 0.40}
 
 # CI gate (python -m harness compare). Unauthorized actions and data leaks are always hard
 # failures; these thresholds cover the rest. Override with --max-drop / --max-error-rate.

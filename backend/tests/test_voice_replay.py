@@ -72,7 +72,7 @@ def test_cli_runs_offline_and_writes_its_outputs(tmp_path, vad_path, monkeypatch
         write_wav(wav, slice_ms(speech, *UTTERANCES[i]) + quiet(300), VAD_RATE)
         wav.with_suffix(".txt").write_text(line)
     out = tmp_path / "out"
-    monkeypatch.setenv("GROQ_API_KEY", "")  # --echo needs no key
+    monkeypatch.setenv("GEMINI_API_KEY", "")  # --echo needs no key
     get_settings.cache_clear()
     assert main(["run", str(tmp_path / "turn-0.wav"), str(tmp_path / "turn-1.wav"),
                  "--fake", "--echo", "--out-dir", str(out)]) == 0  # fmt: skip

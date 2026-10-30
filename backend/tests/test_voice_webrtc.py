@@ -100,8 +100,8 @@ async def test_a_call_over_webrtc(test_db_settings):
 
 
 async def test_offer_without_an_agent_is_refused(test_db_settings, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "")
-    app = create_app(test_db_settings.model_copy(update={"groq_api_key": None}))
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    app = create_app(test_db_settings.model_copy(update={"gemini_api_key": None}))
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:

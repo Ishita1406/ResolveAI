@@ -1,6 +1,6 @@
 """A client-side tokens-per-minute budget, shared by every LLM client that holds it.
 
-Groq rejects a request (429) when the tokens used in the last minute plus the request's
+The provider rejects a request (429) when the tokens used in the last minute plus the request's
 estimate (prompt + max_completion_tokens) exceed the limit. Waiting here first keeps
 concurrent conversations (the eval harness, or several sessions on a small plan) from
 failing on 429 and retrying. Estimates are rough; a 429 can still happen and is retried by
@@ -17,7 +17,7 @@ from typing import Any
 
 def estimate_prompt_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     """About 4 characters per token. Callers correct it with observed usage (JSON-heavy
-    prompts tokenize differently), then add the completion budget, which Groq counts up
+    prompts tokenize differently), then add the completion budget, which some providers count up
     front (1,024 when not set)."""
     chars = len(json.dumps(messages, ensure_ascii=False)) + len(json.dumps(tools))
     return chars // 4

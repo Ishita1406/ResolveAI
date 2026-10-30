@@ -1,4 +1,4 @@
-"""GroqClient against a mocked HTTP transport (no network)."""
+"""GeminiClient against a mocked HTTP transport (no network)."""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from app.agent.llm import Completion, GroqClient, LLMError, TextDelta
+from app.agent.llm import Completion, GeminiClient, LLMError, TextDelta, tool_call_message
 
 pytestmark = pytest.mark.anyio
 
@@ -32,9 +32,9 @@ class Recorder:
         return self.response
 
 
-def _client(handler) -> GroqClient:
-    return GroqClient(api_key="test-key", model="test-model", base_url="https://llm.test/v1",
-                      transport=httpx.MockTransport(handler))  # fmt: skip
+def _client(handler) -> GeminiClient:
+    return GeminiClient(api_key="test-key", model="test-model", base_url="https://llm.test/v1",
+                        transport=httpx.MockTransport(handler))  # fmt: skip
 
 
 async def _collect(client, tools=None):
@@ -51,6 +51,7 @@ async def test_text_is_streamed_then_completed():
     assert request.headers["authorization"] == "Bearer test-key"
     body = json.loads(request.content)
     assert (body["model"], body["stream"]) == ("test-model", True)
+    assert body["stream_options"] == {"include_usage": True}  # Gemini sends usage on request
     assert "tools" not in body
 
 
@@ -61,7 +62,7 @@ async def test_tool_call_fragments_are_assembled():
     frag3 = {"index": 1, "id": "call_b", "function": {"name": "list_recent_orders",
                                                       "arguments": "{}"}}  # fmt: skip
     finish = {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-              "x_groq": {"usage": {"total_tokens": 42}}}  # fmt: skip
+              "usage": {"total_tokens": 42}}  # fmt: skip
     rec = Recorder(httpx.Response(200, content=_sse(
         _delta(tool_calls=[frag1]), _delta(tool_calls=[frag2]), _delta(tool_calls=[frag3]),
         finish)))  # fmt: skip
@@ -124,13 +125,14 @@ async def test_closing_the_stream_closes_the_http_response():
 
 async def test_request_carries_limits_reasoning_and_stop():
     rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
-    client = GroqClient(api_key="k", model="openai/gpt-oss-120b", base_url="https://llm.test/v1",
-                        max_completion_tokens=800, reasoning_effort="low",
-                        transport=httpx.MockTransport(rec))  # fmt: skip
+    client = GeminiClient(api_key="k", model="gemini-3.8-flash", base_url="https://llm.test/v1",
+                          max_completion_tokens=800, reasoning_effort="low",
+                          transport=httpx.MockTransport(rec))  # fmt: skip
     _ = [e async for e in client.stream([], [], stop=["<customer_message>"])]
     body = json.loads(rec.requests[0].content)
     assert body["max_completion_tokens"] == 800
-    assert (body["reasoning_effort"], body["include_reasoning"]) == ("low", False)
+    assert body["reasoning_effort"] == "low"
+    assert "include_reasoning" not in body  # Groq-only; Gemini rejects unknown fields
     assert body["stop"] == ["<customer_message>"]
 
 
@@ -138,7 +140,7 @@ async def test_reasoning_params_are_omitted_for_other_models():
     rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
     _ = await _collect(_client(rec))
     body = json.loads(rec.requests[0].content)
-    assert not {"reasoning_effort", "include_reasoning", "stop"} & set(body)
+    assert not {"reasoning_effort", "stop"} & set(body)
 
 
 async def test_rate_limit_reports_retry_after():
@@ -148,10 +150,41 @@ async def test_rate_limit_reports_retry_after():
     assert (exc.value.retryable, exc.value.retry_after_s) == (True, 15.8)
 
 
+async def test_rate_limit_reads_gemini_retry_delay_from_the_body():
+    error = [{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "x" * 600,
+              "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                           "retryDelay": "18s"}]}}]  # fmt: skip
+    rec = Recorder(httpx.Response(429, json=error))
+    with pytest.raises(LLMError) as exc:
+        await _collect(_client(rec))
+    assert (exc.value.retryable, exc.value.retry_after_s) == (True, 18.0)
+
+
+async def test_gemini_tool_calls_without_index_and_signatures_are_kept():
+    sig = {"google": {"thought_signature": "abc"}}
+    call_a = {
+        "id": "a",
+        "type": "function",
+        "extra_content": sig,
+        "function": {"name": "get_order", "arguments": '{"order_number": "VX-1"}'},
+    }
+    call_b = {"id": "b", "type": "function",
+              "function": {"name": "list_recent_orders", "arguments": "{}"}}  # fmt: skip
+    rec = Recorder(httpx.Response(200, content=_sse(
+        _delta(tool_calls=[call_a]), _delta(tool_calls=[call_b]))))  # fmt: skip
+    (completion,) = await _collect(_client(rec))
+    assert [(c.id, c.name, c.extra_content) for c in completion.tool_calls] == [
+        ("a", "get_order", sig),
+        ("b", "list_recent_orders", None),
+    ]
+    assert tool_call_message(completion.tool_calls[0])["extra_content"] == sig
+    assert "extra_content" not in tool_call_message(completion.tool_calls[1])
+
+
 async def test_seed_is_sent_only_when_set():
     rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
-    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1", seed=42,
-                        transport=httpx.MockTransport(rec))  # fmt: skip
+    client = GeminiClient(api_key="k", model="m", base_url="https://llm.test/v1", seed=42,
+                          transport=httpx.MockTransport(rec))  # fmt: skip
     _ = [e async for e in client.stream([], [])]
     assert json.loads(rec.requests[0].content)["seed"] == 42
     _ = await _collect(_client(rec))
@@ -168,9 +201,9 @@ async def test_rate_limiter_is_consulted_before_each_request():
 
     limiter = Limiter()
     rec = Recorder(httpx.Response(200, content=_sse(_delta(content="ok"))))
-    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1",
-                        max_completion_tokens=400, rate_limiter=limiter,
-                        transport=httpx.MockTransport(rec))  # fmt: skip
+    client = GeminiClient(api_key="k", model="m", base_url="https://llm.test/v1",
+                          max_completion_tokens=400, rate_limiter=limiter,
+                          transport=httpx.MockTransport(rec))  # fmt: skip
     _ = await _collect(client)
     assert len(limiter.asked) == 1 and limiter.asked[0] > 400  # prompt estimate + completion
 
@@ -191,9 +224,9 @@ async def test_prompt_estimate_learns_from_reported_usage():
     body = _sse(_delta(content="ok"), {"choices": [], "usage": usage})
     limiter = Limiter()
     transport = httpx.MockTransport(lambda r: httpx.Response(200, content=body))
-    client = GroqClient(api_key="k", model="m", base_url="https://llm.test/v1",
-                        max_completion_tokens=10, rate_limiter=limiter,
-                        transport=transport)  # fmt: skip
+    client = GeminiClient(api_key="k", model="m", base_url="https://llm.test/v1",
+                          max_completion_tokens=10, rate_limiter=limiter,
+                          transport=transport)  # fmt: skip
     messages = [{"role": "user", "content": "x" * 4000}]
     for _ in range(3):
         _ = [e async for e in client.stream(messages, [])]

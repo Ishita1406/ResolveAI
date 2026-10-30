@@ -1,6 +1,6 @@
 """Run the voice pipeline against recorded audio instead of a microphone.
 
-    python -m app.voice.replay run a.wav b.wav --out-dir out/          # Cartesia + Groq
+    python -m app.voice.replay run a.wav b.wav --out-dir out/          # Cartesia + Gemini
     python -m app.voice.replay run a.wav b.wav --fake --echo           # fully offline
     python -m app.voice.replay run a.wav b.wav --barge-in-after-ms 800 # b interrupts a's reply
     python -m app.voice.replay fixtures out/fixtures/                  # sample customer audio
@@ -16,7 +16,7 @@ was interrupted).
 
 `--fake` uses the fake STT (transcripts from a .txt next to each .wav) and fake TTS (a tone),
 so only the VAD and the agent are real. `--echo` replaces the LLM with one that repeats
-what it heard, so no Groq key is needed; the agent loop itself is still the real one.
+what it heard, so no Gemini key is needed; the agent loop itself is still the real one.
 """
 
 import argparse
@@ -155,7 +155,7 @@ async def _run(args) -> int:
     echo = EchoLLM() if args.echo else None
     agent, llm = build_agent(settings, engine, redis, llm=echo)
     if agent is None:
-        print("GROQ_API_KEY is not set; use --echo to run without an LLM.", file=sys.stderr)
+        print("GEMINI_API_KEY is not set; use --echo to run without an LLM.", file=sys.stderr)
         return 2
     agent.store = InMemorySessionStore()
     if agent.retriever is not None:
@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("audio", nargs="+", help="WAV files, one customer turn each")
     run.add_argument("--out-dir", default="voice-replay")
     run.add_argument("--fake", action="store_true", help="fake STT/TTS (no Cartesia key)")
-    run.add_argument("--echo", action="store_true", help="echo LLM (no Groq key)")
+    run.add_argument("--echo", action="store_true", help="echo LLM (no Gemini key)")
     run.add_argument("--barge-in-after-ms", type=float, help="each next file interrupts")
     run.add_argument("--real-time", action="store_true", help="pace audio in real time")
     fixtures = sub.add_parser("fixtures", help="synthesize customer WAVs with Cartesia TTS")

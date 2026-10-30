@@ -1,4 +1,4 @@
-"""Tool definitions for LLM tool calling (OpenAI-compatible format, as used by Groq).
+"""Tool definitions for LLM tool calling (OpenAI-compatible format, as used by Gemini).
 
     python -m app.tools.schema > ../docs/tool-schemas.json
 

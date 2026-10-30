@@ -38,19 +38,22 @@ class Replies:
 
 
 def refund_agent() -> ScriptedLLM:
-    """What a good agent does for missing-refund, one model call per step."""
+    """What a good agent does for missing-refund, one model call per step. Verification and
+    the reply to "yes" need no model call: the loop handles them (prefetch, fixed replies)."""
     return ScriptedLLM(
         say("I can help. What's your email and the PIN code of your address?"),
-        call("verify_customer", email="meera.pillai@example.com", postal_code="302647"),
         call("issue_refund", order_number="VX-8015", reason="missing_delivery"),
         say("I can refund ₹3,499 to your original payment method for order VX-8015. "
             "Shall I go ahead?"),
-        say("Done. Your refund is on its way and should arrive in 5 to 7 business days."),
     )  # fmt: skip
 
 
 def replacement_customer() -> Replies:
-    return Replies("meera.pillai@example.com, PIN 302647", "yes", "[END]")
+    return Replies(
+        "meera.pillai@example.com, PIN 302647. My speaker VX-8015 never came, refund please",
+        "yes",
+        "[END]",
+    )
 
 
 @pytest.fixture
@@ -75,7 +78,7 @@ def _config() -> EvalConfig:
 
 
 async def test_runs_are_isolated_scored_and_reported(test_db_settings, redis_up):
-    settings = test_db_settings.model_copy(update={"groq_model": "agent-model"})
+    settings = test_db_settings.model_copy(update={"gemini_model": "agent-model"})
     script = {"missing-refund": refund_agent, "missing-replacement": refund_agent}
 
     def factory(role: str, spec: ModelSpec):
@@ -100,7 +103,7 @@ async def test_runs_are_isolated_scored_and_reported(test_db_settings, redis_up)
         assert run.status == "pass", [(c.name, c.detail) for c in run.checks if not c.ok]
         assert run.finished and run.turns == 3
         assert [r["amount_paise"] for r in run.new_rows["refunds"]] == [349900]
-        assert run.usage["agent"]["llm_calls"] == 5
+        assert run.usage["agent"]["llm_calls"] == 3  # no calls to verify or to say "done"
         assert run.usage["customer"]["llm_calls"] == 3
         assert run.judge.passed is True
         assert any(e["tool"] == "issue_refund" and e["phase"] == "executed" for e in run.tool_log)

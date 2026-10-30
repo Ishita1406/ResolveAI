@@ -18,6 +18,20 @@ texts:
   reply_cut_off: "Your last reply was cut off. Give your complete answer again in one or two short sentences."
   # Spoken directly (no model involved).
   please_hold: "One moment, please."
+  # Spoken directly (no model involved) when a message was only verification details.
+  verified_ready: "Thanks, $first_name, you're verified. How can I help you today?"
+  # Spoken directly (no model involved) after the customer's clear yes or no to a proposal.
+  # $placeholders in done_<tool> are fields of that tool's result.
+  done_create_return: "Done. I've started the return for order $order_number, and your return reference is $return_reference."
+  done_return_by: "Please send the item back by $return_by."
+  done_refund_review: "A colleague will review the refund of $amount and get back to you."
+  done_issue_refund: "Done. Your refund of $amount_display for order $order_number is on its way, reference $refund_reference. It usually takes $expected_timeline."
+  done_reship_order: "Done. Your replacement is on its way as order $replacement_order_number."
+  done_create_ticket: "Done. I've opened ticket $ticket_reference, and our team will follow up."
+  done_escalate_to_human: "I've passed this to a colleague, and your reference is $ticket_reference."
+  not_done: "I'm sorry, I couldn't $summary. $message"
+  not_doing: "Okay, I won't $summary. Is there anything else I can help with?"
+  anything_else: "Is there anything else I can help with?"
   # Spoken directly (no model involved) when a turn fails and the call is handed over.
   fallback_escalated: "I'm sorry, I'm having trouble with this. I've passed it to a colleague who will follow up, and your reference is $reference."
   fallback_failed: "I'm sorry, I'm having trouble with this right now. Please try again in a few minutes."

@@ -15,7 +15,7 @@ class Strict(BaseModel):
 
 
 class AgentModel(Strict):
-    model: str | None = None  # None: the app's GROQ_MODEL
+    model: str | None = None  # None: the app's GEMINI_MODEL
     temperature: float | None = None  # None: the app's LLM_TEMPERATURE (what production uses)
     turn_timeout_s: float = 120.0
 

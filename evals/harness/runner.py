@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.agent.llm import GroqClient, LLMClient, LLMError
+from app.agent.llm import GeminiClient, LLMClient, LLMError
 from app.agent.prompts import load_prompts, render_system_prompt
 from app.agent.ratelimit import TokenRateLimiter
 from app.config import Settings
@@ -35,7 +35,8 @@ log = logging.getLogger(__name__)
 
 ZERO = {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 0}
 # A provider limit that won't reset within this harness run: stop instead of failing on.
-DAILY_LIMIT = re.compile(r"per day|\bTPD\b|\bRPD\b", re.IGNORECASE)
+# "PerDay": Gemini's quota ids, e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier.
+DAILY_LIMIT = re.compile(r"per ?day|\bTPD\b|\bRPD\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -85,20 +86,20 @@ def _add(total: dict[str, int], usage: dict[str, Any] | None) -> None:
         total[key] += int((usage or {}).get(key) or 0)
 
 
-class GroqFactory:
+class GeminiFactory:
     """One rate limiter per model, shared by every client of that model in this run."""
 
     def __init__(self, settings: Settings, config: EvalConfig) -> None:
-        if settings.groq_api_key is None or not settings.groq_api_key.get_secret_value():
-            raise SystemExit("GROQ_API_KEY is not set (see .env.example).")
+        if settings.gemini_api_key is None or not settings.gemini_api_key.get_secret_value():
+            raise SystemExit("GEMINI_API_KEY is not set (see .env.example).")
         self.settings = settings
         self.limiters = {model: TokenRateLimiter(tpm) for model, tpm in config.rate_limits.items()}
 
     def __call__(self, role: str, spec: ModelSpec) -> LLMClient:
-        return GroqClient(
-            api_key=self.settings.groq_api_key.get_secret_value(),
+        return GeminiClient(
+            api_key=self.settings.gemini_api_key.get_secret_value(),
             model=spec.model,
-            base_url=self.settings.groq_base_url,
+            base_url=self.settings.gemini_base_url,
             temperature=spec.temperature,
             timeout_s=max(self.settings.llm_request_timeout_s, 60.0),
             max_completion_tokens=spec.max_completion_tokens,
@@ -124,7 +125,7 @@ class Harness:
         self.llm_factory = llm_factory
         self.policy = policy or get_policy()
         self.mode = config.policy_context_mode or settings.policy_context_mode
-        self.agent_model = config.agent.model or settings.groq_model
+        self.agent_model = config.agent.model or settings.gemini_model
         self.agent_temperature = (
             config.agent.temperature
             if config.agent.temperature is not None
@@ -194,7 +195,7 @@ class Harness:
                 name,
                 agent_turn_timeout_s=self.config.agent.turn_timeout_s,
                 policy_context_mode=self.mode,
-                groq_model=self.agent_model,
+                gemini_model=self.agent_model,
             )
             customer = SimulatedCustomer(scenario, customer_llm)
             await self._converse(scenario, settings, agent_llm, customer, result)

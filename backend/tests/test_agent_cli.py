@@ -50,4 +50,4 @@ async def test_ctrl_d_exits(monkeypatch):
 async def test_without_a_key_it_explains_and_exits(monkeypatch, capsys):
     monkeypatch.setattr(cli, "build_agent", lambda *a: (None, None))
     assert await cli.main([]) == 2
-    assert "GROQ_API_KEY is not set" in capsys.readouterr().err
+    assert "GEMINI_API_KEY is not set" in capsys.readouterr().err

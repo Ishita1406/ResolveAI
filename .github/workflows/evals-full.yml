@@ -9,7 +9,7 @@ on:
         description: Runs per scenario
         default: "3"
       concurrency:
-        description: Parallel runs (match your Groq plan's rate limits)
+        description: Parallel runs (match your Gemini tier's rate limits)
         default: "1"
       tags:
         description: Only scenarios with any of these tags (comma-separated; empty = all)
@@ -27,7 +27,7 @@ env:
   TEST_POSTGRES_DB: resolveai_test
   REDIS_URL: redis://127.0.0.1:6379/0
   EMBEDDING_CACHE_DIR: /home/runner/.cache/resolveai/fastembed
-  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
 jobs:
   full-eval:
@@ -58,9 +58,9 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - name: Require the Groq API key
+      - name: Require the Gemini API key
         working-directory: ${{ github.workspace }}  # before checkout: backend/ isn't there yet
-        run: test -n "$GROQ_API_KEY" || { echo "::error::Set the GROQ_API_KEY secret."; exit 1; }
+        run: test -n "$GEMINI_API_KEY" || { echo "::error::Set the GEMINI_API_KEY secret."; exit 1; }
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:

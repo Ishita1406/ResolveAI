@@ -23,7 +23,7 @@ from app.retrieval.embedding import embedder_from_settings
 from harness.baseline import compare, make_baseline
 from harness.config import CONFIG_PATH, EVALS_DIR, load_config
 from harness.report import markdown, metrics, results_json
-from harness.runner import GroqFactory, Harness
+from harness.runner import GeminiFactory, Harness
 from harness.scenario import load_scenarios, select
 from harness.validate import problems
 
@@ -67,7 +67,7 @@ async def _run(args) -> int:
     embedder = embedder_from_settings(settings)
     await embedder.warm()
     harness = Harness(
-        config, settings, embedder=embedder, llm_factory=GroqFactory(settings, config)
+        config, settings, embedder=embedder, llm_factory=GeminiFactory(settings, config)
     )
     models = {
         "agent": harness.agent_model,

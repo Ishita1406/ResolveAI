@@ -60,7 +60,7 @@ eval-adversarial:
 
 # Voice pipeline on recorded audio (no microphone). FILES: WAVs, one customer turn each.
 # Offline by default (fake STT/TTS, echo LLM); ARGS="" with CARTESIA_API_KEY and
-# GROQ_API_KEY set runs the real providers. Example:
+# GEMINI_API_KEY set runs the real providers. Example:
 #   make voice-fixtures && make voice-replay FILES="../voice-fixtures/customer-*.wav" ARGS=""
 voice-replay:
 	cd backend && uv run python -m app.voice.replay run $(FILES) --out-dir ../voice-replay $(if $(ARGS),$(ARGS),--fake --echo)

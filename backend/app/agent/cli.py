@@ -81,7 +81,7 @@ async def main(argv: list[str] | None = None) -> int:
     redis = Redis.from_url(settings.redis_url)
     agent, llm = build_agent(settings, engine, redis)
     if agent is None:
-        print("GROQ_API_KEY is not set. Add it to .env (see .env.example).", file=sys.stderr)
+        print("GEMINI_API_KEY is not set. Add it to .env (see .env.example).", file=sys.stderr)
         await redis.aclose()
         await engine.dispose()
         return 2
@@ -94,7 +94,7 @@ async def main(argv: list[str] | None = None) -> int:
         if session is None:
             session = await agent.start_session()
         print(f"{BOLD}ResolveAI{RESET} session {session.session_id} "
-              f"(model {settings.groq_model}). Ctrl-C interrupts, Ctrl-D quits.")  # fmt: skip
+              f"(model {settings.gemini_model}). Ctrl-C interrupts, Ctrl-D quits.")  # fmt: skip
         while True:
             try:
                 text = await asyncio.to_thread(input, f"{BOLD}you>{RESET} ")

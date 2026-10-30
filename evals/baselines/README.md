@@ -38,5 +38,5 @@ cd backend && PYTHONPATH=../evals uv run python -m harness baseline \
 ```
 
 For CI, take the run from the same setup CI uses: the smoke flags above, the production
-`GROQ_MODEL` and prompt version. For the full suite, download the `full-eval` artifact from
+`GEMINI_MODEL` and prompt version. For the full suite, download the `full-eval` artifact from
 the manual workflow and run `baseline --suite full`.

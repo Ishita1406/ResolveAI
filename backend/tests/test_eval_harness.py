@@ -369,8 +369,10 @@ async def test_a_daily_quota_stops_the_remaining_runs():
 
     from app.config import get_settings
 
-    groq_tpd = "Rate limit reached ... on tokens per day (TPD): Limit 200000, Used 199421"
-    assert DAILY_LIMIT.search(groq_tpd)
+    tpd = "Rate limit reached ... on tokens per day (TPD): Limit 200000, Used 199421"
+    assert DAILY_LIMIT.search(tpd)
+    gemini_rpd = '"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"'
+    assert DAILY_LIMIT.search(gemini_rpd)
     assert not DAILY_LIMIT.search("on tokens per minute (TPM): Limit 8000")
 
     def unused_factory(role, spec):

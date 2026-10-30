@@ -206,7 +206,9 @@ class FakeTtsProvider:
     20 ms chunks with an optional delay. Records what was spoken.
 
     Failure injection: an utterance whose first sentence contains one of `fail_texts` fails
-    after its first chunk (each entry is used once); `fail_connects` fails connecting."""
+    after its first chunk (each entry is used once); `fail_connects` fails connecting.
+    `expire_after_s` mimics Cartesia ending a context that has been idle that long: text
+    sent to it afterwards is dropped silently (recorded in `dropped`)."""
 
     def __init__(
         self,
@@ -216,8 +218,11 @@ class FakeTtsProvider:
         first_chunk_delay_s: float = 0.0,
         fail_texts: list[str] | None = None,
         fail_connects: int = 0,
+        expire_after_s: float | None = None,
     ) -> None:
         self.sample_rate = sample_rate
+        self.expire_after_s = expire_after_s
+        self.dropped: list[str] = []
         self.ms_per_char = ms_per_char
         self.first_chunk_delay_s = first_chunk_delay_s
         self.fail_texts = list(fail_texts or [])
@@ -253,8 +258,12 @@ class _FakeUtterance:
         self._said = 0
         self._queue: asyncio.Queue = asyncio.Queue()
         self._cancelled = False
+        self._expired = False
 
     async def say(self, text: str) -> None:
+        if self._expired:
+            self.p.dropped.append(text)
+            return
         self._said += 1
         if self._said == 1:  # an utterance fails on its first sentence's text
             hit = next((t for t in self.p.fail_texts if t in text), None)
@@ -275,7 +284,11 @@ class _FakeUtterance:
     async def audio(self) -> AsyncIterator[bytes]:
         first = True
         while True:
-            item = await self._queue.get()
+            try:
+                item = await asyncio.wait_for(self._queue.get(), self.p.expire_after_s)
+            except TimeoutError:
+                self._expired = True  # idle too long; only finish() (_END) still arrives
+                item = await self._queue.get()
             if item is _END or self._cancelled:
                 return
             samples = int(self.p.sample_rate * len(item) * self.p.ms_per_char / 1000)

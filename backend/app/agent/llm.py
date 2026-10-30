@@ -1,4 +1,4 @@
-"""Streaming chat-completions client for Groq (OpenAI-compatible), over plain httpx.
+"""Streaming chat-completions client for Gemini's OpenAI-compatible endpoint, over plain httpx.
 
 LLMClient.stream() yields TextDelta events as tokens arrive and ends with one Completion
 holding the assembled tool calls. Closing the iterator (or cancelling its task) closes the
@@ -7,6 +7,7 @@ HTTP response, so an abandoned generation stops consuming tokens.
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ class ToolCall:
     id: str
     name: str
     arguments: str  # raw JSON text, as produced by the model
+    # Provider data to send back with the call, e.g. Gemini's thought signature.
+    extra_content: dict[str, Any] | None = None
 
     def parsed_arguments(self) -> dict[str, Any]:
         """The arguments as a dict; malformed JSON becomes {} (validation then rejects it)."""
@@ -67,11 +70,14 @@ class LLMError(Exception):
         self.retry_after_s = retry_after_s  # from the provider's retry-after header, if any
 
 
-def _retry_after(response: httpx.Response) -> float | None:
+def _retry_after(response: httpx.Response, detail: str) -> float | None:
+    """The retry-after header, else Gemini's RetryInfo in the body ("retryDelay": "18s")."""
     try:
         return float(response.headers["retry-after"])
     except (KeyError, ValueError):
-        return None
+        pass
+    match = re.search(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"', detail)
+    return float(match.group(1)) if match else None
 
 
 class LLMClient(Protocol):
@@ -81,27 +87,62 @@ class LLMClient(Protocol):
 
 
 class _ToolCallBuilder:
-    """Tool calls arrive as fragments keyed by index; arguments are concatenated text."""
+    """Tool calls arrive as fragments keyed by index; arguments are concatenated text.
+
+    Gemini may leave out the index and send each call whole, so a fragment without one
+    continues the call with its id, or else starts a new call when it carries a new id.
+    """
 
     def __init__(self) -> None:
-        self._calls: dict[int, dict[str, str]] = {}
+        self._calls: dict[int, dict[str, Any]] = {}
+
+    def _slot(self, frag: dict[str, Any]) -> int:
+        if "index" in frag:
+            return frag["index"]
+        frag_id = frag.get("id")
+        for i, call in self._calls.items():
+            if frag_id and call["id"] == frag_id:
+                return i
+        if frag_id or not self._calls:
+            return len(self._calls)
+        return max(self._calls)
 
     def add(self, fragments: list[dict[str, Any]]) -> None:
         for frag in fragments:
-            call = self._calls.setdefault(frag.get("index", 0), {"id": "", "name": "", "args": ""})
+            call = self._calls.setdefault(
+                self._slot(frag), {"id": "", "name": "", "args": "", "extra": None}
+            )
             call["id"] = frag.get("id") or call["id"]
             fn = frag.get("function") or {}
             call["name"] = fn.get("name") or call["name"]
             call["args"] += fn.get("arguments") or ""
+            call["extra"] = frag.get("extra_content") or call["extra"]
 
     def build(self) -> list[ToolCall]:
         return [
-            ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["args"])
+            ToolCall(
+                id=c["id"] or f"call_{i}",
+                name=c["name"],
+                arguments=c["args"],
+                extra_content=c["extra"],
+            )
             for i, c in sorted(self._calls.items())
         ]
 
 
-class GroqClient:
+def tool_call_message(call: ToolCall) -> dict[str, Any]:
+    """A tool call as it goes back to the provider in an assistant message."""
+    message: dict[str, Any] = {
+        "id": call.id,
+        "type": "function",
+        "function": {"name": call.name, "arguments": call.arguments},
+    }
+    if call.extra_content:
+        message["extra_content"] = call.extra_content
+    return message
+
+
+class GeminiClient:
     def __init__(
         self,
         *,
@@ -145,13 +186,14 @@ class GroqClient:
             "messages": messages,
             "temperature": self.temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if self.max_completion_tokens:
             body["max_completion_tokens"] = self.max_completion_tokens
         if self.reasoning_effort:
-            # GPT-OSS: reasoning still costs tokens, but we don't need its text back.
+            # Gemini's thinking level ("none" turns it off on Flash models). Thinking tokens
+            # count toward max_completion_tokens.
             body["reasoning_effort"] = self.reasoning_effort
-            body["include_reasoning"] = False
         if stop:
             body["stop"] = stop
         if self.seed is not None:
@@ -174,14 +216,15 @@ class GroqClient:
         try:
             async with self._http.stream("POST", "/chat/completions", json=body) as response:
                 if response.status_code >= 400:
-                    detail = (await response.aread()).decode(errors="replace")[:500]
+                    full = (await response.aread()).decode(errors="replace")
+                    detail = full[:500]
                     retryable = response.status_code == 429 or response.status_code >= 500
                     self.last_error = f"HTTP {response.status_code}: {detail}"
                     raise LLMError(
                         f"LLM HTTP {response.status_code}: {detail}",
                         retryable=retryable,
                         status=response.status_code,
-                        retry_after_s=_retry_after(response),
+                        retry_after_s=_retry_after(response, full),
                     )
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -190,7 +233,7 @@ class GroqClient:
                     if payload == "[DONE]":
                         break
                     chunk = json.loads(payload)
-                    usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage") or usage
+                    usage = chunk.get("usage") or usage
                     for choice in chunk.get("choices", []):
                         delta = choice.get("delta") or {}
                         if delta.get("content"):

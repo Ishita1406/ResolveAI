@@ -104,7 +104,7 @@ jobs:
     env:
       # Repository secret. Not available to pull requests from forks: the job then skips
       # with a warning instead of failing for a reason the author can't fix.
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       # Repository variables (Settings > Secrets and variables > Actions > Variables).
       EVAL_SMOKE_RUNS: ${{ vars.EVAL_SMOKE_RUNS || '1' }}
       EVAL_CONCURRENCY: ${{ vars.EVAL_CONCURRENCY || '1' }}
@@ -114,12 +114,12 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - name: Check for the Groq API key
+      - name: Check for the Gemini API key
         id: key
         working-directory: ${{ github.workspace }}  # before checkout: backend/ isn't there yet
         run: |
-          if [ -z "$GROQ_API_KEY" ]; then
-            echo "::warning::GROQ_API_KEY is not set for this run; the smoke eval was skipped."
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::GEMINI_API_KEY is not set for this run; the smoke eval was skipped."
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"

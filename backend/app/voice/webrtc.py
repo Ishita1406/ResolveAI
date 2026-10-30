@@ -120,7 +120,7 @@ async def offer(body: Offer, request: Request) -> Answer:
     app = request.app
     agent = getattr(app.state, "agent", None)
     if agent is None:
-        raise HTTPException(503, "The assistant isn't configured (GROQ_API_KEY).")
+        raise HTTPException(503, "The assistant isn't configured (GEMINI_API_KEY).")
     settings = getattr(app.state, "settings", None) or get_settings()
     factory: ProviderFactory = getattr(app.state, "voice_providers", None) or cartesia_providers
     try:

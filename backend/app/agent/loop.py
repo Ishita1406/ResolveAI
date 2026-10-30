@@ -3,7 +3,11 @@
 Per turn:
   1. advance the session's turn counter (expires stale proposals) and reconcile writes
   2. if a proposal is awaiting confirmation, classify the customer's reply deterministically:
-     yes -> confirm + execute; no -> cancel; anything else -> the model re-asks
+     yes -> confirm + execute; no -> cancel; anything else -> the model re-asks. A clear yes
+     or no is answered from the outcome without the model (when the prompt set has the texts)
+  2b. otherwise (with prefetch on) run the lookups the message plainly asks for, an email or
+     phone plus PIN, and one order number, as if the model had called them; a message that is
+     only verification details is answered without the model (prefetch.py)
   3. call the model with the tools; run read tools, turn write-tool calls into proposals
      (the model can only propose); repeat until the model answers without tool calls
   4. on timeout, iteration limit or model failure: hand off to a human with a summary
@@ -26,7 +30,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent import transcript
+from app.agent import prefetch, transcript
 from app.agent.confirmation import Reply, classify_reply
 from app.agent.events import (
     ActionEvent,
@@ -38,7 +42,14 @@ from app.agent.events import (
     ToolEvent,
 )
 from app.agent.grounding import CustomerTagGuard, ungrounded_identity
-from app.agent.llm import Completion, LLMClient, LLMError, TextDelta, ToolCall
+from app.agent.llm import (
+    Completion,
+    LLMClient,
+    LLMError,
+    TextDelta,
+    ToolCall,
+    tool_call_message,
+)
 from app.agent.prompts import PromptSet, render_system_prompt
 from app.agent.session import AgentSession, SessionBusyError, SessionStore
 from app.domain.enums import ConversationChannel, EscalationReason, TurnRole
@@ -76,6 +87,7 @@ class AgentConfig:
     llm_retries: int = 2  # per model call, only for retryable errors (429, 5xx, timeouts)
     min_answer_time_s: float = 5.0  # don't start a retry wait that leaves less than this
     history_tool_result_chars: int = 400  # tool results in older turns are cut to this
+    prefetch: bool = False  # deterministic verify/get_order before the model (prefetch.py)
 
 
 class _IterationLimitError(Exception):
@@ -273,7 +285,14 @@ class Agent:
         for expired in gate.register_customer_turn(ctx):
             turn.notices.append(self.prompts.notice("expired", summary=expired.summary))
         await gate.reconcile(ctx)
-        await self._handle_confirmation(ctx, turn, text, emit)
+        pending = self._awaiting(ctx)
+        reply = await self._handle_confirmation(ctx, turn, text, emit)
+        if reply:
+            self._answer_directly(turn, emit, reply)
+            return
+        if self.config.prefetch and pending is None:
+            if await self._prefetch(session, ctx, turn, text, emit):
+                return
 
         while True:
             turn.iterations += 1
@@ -287,14 +306,7 @@ class Agent:
                     continue
             assistant: dict[str, Any] = {"role": "assistant", "content": completion.text or ""}
             if completion.tool_calls:
-                assistant["tool_calls"] = [
-                    {
-                        "id": c.id,
-                        "type": "function",
-                        "function": {"name": c.name, "arguments": c.arguments},
-                    }
-                    for c in completion.tool_calls
-                ]
+                assistant["tool_calls"] = [tool_call_message(c) for c in completion.tool_calls]
             turn.messages.append(assistant)
             if (
                 not completion.tool_calls
@@ -323,15 +335,17 @@ class Agent:
 
     async def _handle_confirmation(
         self, ctx: ToolContext, turn: _Turn, text: str, emit: Callable
-    ) -> None:
+    ) -> str | None:
+        """Apply a clear yes or no to the awaiting proposal. Returns the reply to speak when
+        it can be said without the model (the outcome is all there is to tell)."""
         pending = self._awaiting(ctx)
         if pending is None:
-            return
+            return None
         match classify_reply(text):
             case Reply.YES:
                 confirmed = gate.confirm(ctx, pending.id)
                 if not confirmed.ok:
-                    return
+                    return None
                 result = await self._protected(turn, gate.execute(ctx, pending.id))
                 emit(self._action_event(ctx, pending.id))
                 self._log_tool(
@@ -350,14 +364,14 @@ class Agent:
                             result=json.dumps(result.tool_result.data, ensure_ascii=False),
                         )
                     )
-                else:
-                    turn.notices.append(
-                        self.prompts.notice(
-                            "execution_failed",
-                            summary=pending.summary,
-                            message=result.error.message if result.error else "unknown error",
-                        )
+                    return self._done_reply(pending.tool, result.tool_result.data)
+                message = result.error.message if result.error else "unknown error"
+                turn.notices.append(
+                    self.prompts.notice(
+                        "execution_failed", summary=pending.summary, message=message
                     )
+                )
+                return self._fixed_reply("not_done", summary=pending.summary, message=message)
             case Reply.NO:
                 gate.cancel(ctx, pending.id)
                 emit(self._action_event(ctx, pending.id))
@@ -372,8 +386,111 @@ class Agent:
                 turn.notices.append(
                     self.prompts.notice("cancelled_by_customer", summary=pending.summary)
                 )
+                return self._fixed_reply("not_doing", summary=pending.summary)
             case Reply.AMBIGUOUS:
                 pass  # the model sees the pending proposal in the turn context and re-asks
+        return None
+
+    def _fixed_reply(self, key: str, **values: object) -> str | None:
+        """A reply spoken without the model, or None if this prompt version has no such text
+        (then the model answers, as before)."""
+        if key not in self.prompts.notices:
+            return None
+        return self.prompts.notice(key, **values)
+
+    def _done_reply(self, tool: str, data: dict[str, Any]) -> str | None:
+        """What a confirmed action did, from its result: references, amounts, deadlines."""
+        main = self._fixed_reply(f"done_{tool}", **data)
+        if main is None:
+            return None
+        parts = [main]
+        if tool == "create_return":
+            if data.get("return_by"):
+                parts.append(self.prompts.notice("done_return_by", return_by=data["return_by"]))
+            if data.get("refund_requires_human"):
+                parts.append(
+                    self.prompts.notice("done_refund_review", amount=data["refund_amount_display"])
+                )
+        if tool != "escalate_to_human":
+            parts.append(self.prompts.notice("anything_else"))
+        return " ".join(parts)
+
+    def _answer_directly(self, turn: _Turn, emit: Callable, reply: str) -> None:
+        """End the turn with a fixed reply: no model call."""
+        for i, word in enumerate(reply.split(" ")):
+            self._say(turn, emit, word if i == 0 else " " + word)
+        turn.messages.append({"role": "assistant", "content": reply})
+        turn.completed = True
+        turn.done = DoneEvent(
+            reply=self._spoken(turn), outcome="completed", iterations=0, usage=turn.usage
+        )
+
+    async def _prefetch(
+        self, session: AgentSession, ctx: ToolContext, turn: _Turn, text: str, emit: Callable
+    ) -> bool:
+        """Run the tool calls this message plainly needs. True if the turn is answered."""
+        found = prefetch.extract(text)
+        state = ctx.state
+        verified_now = False
+        if (
+            not state.is_verified
+            and not state.is_locked
+            and (found.email or found.phone or found.pin)
+        ):
+            # One detail may have come in an earlier message ("my email is ..." then the PIN).
+            earlier = [prefetch.extract(t) for t in reversed(self._customer_texts(session, turn))]
+            pin = next((f.pin for f in earlier if f.pin), None)
+            who = next((f for f in earlier if f.email or f.phone), None)
+            if pin and who:
+                identity = {"email": who.email} if who.email else {"phone": who.phone}
+                await self._prefetched(
+                    session, ctx, turn, "verify_customer", {**identity, "postal_code": pin}, emit
+                )
+                verified_now = state.is_verified
+        if (
+            state.is_verified
+            and found.order_number
+            and found.order_number != session.current_order_number
+        ):
+            await self._prefetched(
+                session, ctx, turn, "get_order", {"order_number": found.order_number}, emit
+            )
+            return False
+        if verified_now and prefetch.only_identification(text, found, state.customer_name):
+            first_name = (state.customer_name or "").split()[0]
+            reply = self._fixed_reply("verified_ready", first_name=first_name)
+            if reply:
+                self._answer_directly(turn, emit, reply)
+                return True
+        return False
+
+    async def _prefetched(
+        self,
+        session: AgentSession,
+        ctx: ToolContext,
+        turn: _Turn,
+        name: str,
+        args: dict[str, Any],
+        emit: Callable,
+    ) -> None:
+        """A tool call the loop makes on the model's behalf, recorded as if the model had made
+        it, so the model reads the result exactly as it would its own."""
+        call = ToolCall(
+            id=f"prefetch_{len(turn.messages)}",
+            name=name,
+            arguments=json.dumps(args),
+            # Gemini checks thought signatures on past calls; this one has none to send.
+            extra_content={"google": {"thought_signature": "skip_thought_signature_validator"}},
+        )
+        turn.messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [tool_call_message(call)],
+            }
+        )
+        content = await self._run_tool(session, ctx, turn, call, emit, source="prefetch")
+        turn.messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
     async def _call_model(
         self, session: AgentSession, ctx: ToolContext, turn: _Turn, emit: Callable
@@ -467,7 +584,14 @@ class Agent:
         return replace(completion, text="".join(said)), False
 
     async def _run_tool(
-        self, session: AgentSession, ctx: ToolContext, turn: _Turn, call: ToolCall, emit: Callable
+        self,
+        session: AgentSession,
+        ctx: ToolContext,
+        turn: _Turn,
+        call: ToolCall,
+        emit: Callable,
+        *,
+        source: str | None = None,
     ) -> str:
         args = call.parsed_arguments()
         emit(ToolEvent(name=call.name, status="started"))
@@ -518,7 +642,7 @@ class Agent:
                     "hint": f"There is no tool named {call.name!r}.",
                 }
             }
-        self._log_tool(turn, call.name, args, ok=ok, payload=payload, phase="call")
+        self._log_tool(turn, call.name, args, ok=ok, payload=payload, phase="call", source=source)
         emit(ToolEvent(name=call.name, status="finished", ok=ok))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -588,10 +712,11 @@ class Agent:
         ok: bool,
         payload: dict[str, Any],
         phase: str,
+        source: str | None = None,
     ) -> None:
         """phase: "call" (the model called it; a write tool only proposes), "executed" or
         "cancelled" (the customer's yes or no to a proposal), or "system" (a handoff the
-        loop made itself)."""
+        loop made itself). source "prefetch": a call the loop made for the model."""
         error = payload.get("error") or {}
         entry = {
             "tool": tool,
@@ -601,6 +726,8 @@ class Agent:
             "status": payload.get("status"),
             "error": error.get("code") if isinstance(error, dict) else None,
         }
+        if source:
+            entry["source"] = source
         turn.tool_log.append(json.dumps(entry, ensure_ascii=False, default=str))
 
     def _say(self, turn: _Turn, emit: Callable, text: str) -> None:

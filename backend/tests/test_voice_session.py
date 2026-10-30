@@ -64,12 +64,28 @@ async def test_speech_starts_before_the_reply_is_finished(tx_db):
     await session.close()
 
 
+async def test_a_pause_mid_reply_doesnt_silence_the_rest(tx_db):
+    """Cartesia ends a context about a second after its last audio. A reply that pauses
+    longer (a tool call, a model retry) must still be spoken after the pause."""
+    reply = say("Let me check that for you. Your order is on its way.")
+    reply.insert(6, Pause(1.0))  # after the first sentence
+    llm = ScriptedLLM(reply)
+    tts = FakeTtsProvider(ms_per_char=20.0, expire_after_s=0.3)
+    session, driver, _, tts = await start(tx_db, llm, script=["where is it"], tts=tts)
+    await driver.play(noise(600) + quiet(700))
+    await driver.settle()
+    assert tts.dropped == []
+    assert [t for t in tts.spoken if "order" in t] == ["Your order is on its way."]
+    await session.close()
+
+
 async def test_barge_in_stops_playback_and_cancels_the_llm(tx_db):
     long_reply = say("I can help with that. " * 30)
     long_reply.insert(20, Pause(5.0))  # still generating when the customer interrupts
     llm = ScriptedLLM(long_reply, say("Sure, go ahead."))
     session, driver, _, tts = await start(tx_db, llm, script=["hello", "wait stop"],
                                           tts=FakeTtsProvider(ms_per_char=20.0))  # fmt: skip
+    tts.first_chunk_delay_s = 0.3  # each sentence starts slowly: one is in flight at barge-in
     await driver.play(noise(600) + quiet(700))
     await driver.until(lambda: session.out.playing)
     await driver.play(noise(400))  # the customer talks over the agent

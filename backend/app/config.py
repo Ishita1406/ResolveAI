@@ -28,17 +28,19 @@ class Settings(BaseSettings):
 
     health_check_timeout_s: float = 2.0
 
-    # LLM (Groq, OpenAI-compatible chat completions). No key means the agent is disabled.
-    groq_api_key: SecretStr | None = None
-    groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_model: str = "openai/gpt-oss-120b"
+    # LLM (Gemini, OpenAI-compatible chat completions). No key means the agent is disabled.
+    gemini_api_key: SecretStr | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    gemini_model: str = "gemini-3.6-flash"
     llm_temperature: float = 0.2
     llm_request_timeout_s: float = 20.0
-    llm_max_completion_tokens: int = 400
-    llm_reasoning_effort: str | None = "low"
+    # Includes thinking tokens on Gemini, so raise it if reasoning is turned up.
+    llm_max_completion_tokens: int = 800
+    # "none" turns thinking off (Gemini 3 Flash rejects "minimal"): fastest first token.
+    llm_reasoning_effort: str | None = "none"
     # Best-effort reproducibility; the provider may still vary. None sends no seed.
     llm_seed: int | None = None
-    # Client-side tokens-per-minute budget (Groq free tier: 8000). None means no limiter.
+    # Client-side tokens-per-minute budget. None means no limiter.
     llm_tokens_per_minute: int | None = None
 
     # Agent loop
@@ -46,6 +48,9 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 6
     agent_turn_timeout_s: float = 30.0
     agent_history_turns: int = 10
+    # Run verify_customer / get_order straight from the customer's message when it plainly
+    # holds the details, instead of a model call each (app/agent/prefetch.py).
+    agent_prefetch: bool = True
     session_ttl_s: int = 3600
 
     # Policy documents. "retrieval": the agent calls search_policies (hybrid search over

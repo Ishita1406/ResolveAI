@@ -8,7 +8,7 @@ from app.main import build_agent
 
 @pytest.fixture
 def settings(monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
     monkeypatch.setenv("AGENT_PROMPT_VERSION", "v3")
 
     def load(**env):

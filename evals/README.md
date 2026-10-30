@@ -46,7 +46,7 @@ Options: `--tags` (any of), `--exclude-tags`, `--ids`, `--runs`, `--concurrency`
 `--policy-mode`, `--no-judge`, `--config`, `--output-dir`, `--verbose`.
 
 **Requirements:**
-- `GROQ_API_KEY` in `.env`.
+- `GEMINI_API_KEY` in `.env`.
 - Redis (`docker compose up -d redis`).
 - PostgreSQL, with permission for the configured user to create databases. They're named
   `<POSTGRES_DB>_eval_*`; nothing else is touched.
@@ -54,14 +54,13 @@ Options: `--tags` (any of), `--exclude-tags`, `--ids`, `--runs`, `--concurrency`
 **Time and quota.**
 - A conversation uses about 6 to 7k agent tokens, plus about 2k for the judge: roughly
   **1M tokens for the full 40 × 3 run.**
-- **Groq's free tier can't do that in one day.** It allows about 8K tokens per minute *and*
-  200K tokens per day for gpt-oss-120b, so one full run takes about 5 days of free quota.
-  Use the Developer plan (250K TPM per console.groq.com/docs/models), or run tagged subsets
-  across days.
+- **Gemini's free tier can't do that in one day.** Its caps are on requests per minute and
+  per day, and a full run makes thousands of requests (agent, simulated customer and judge).
+  Use a paid tier, or run tagged subsets across days. Current limits are listed in AI Studio.
 - Set `rate_limits` and `concurrency` in `config.yaml` to your plan. Concurrency 1 suits the
   free tier.
 - The client-side limiter waits for per-minute quota instead of failing, and calibrates its
-  estimates from the usage Groq reports. Turns may then be slow, so the eval uses a 120 s
+  estimates from the usage Gemini reports. Turns may then be slow, so the eval uses a 120 s
   turn timeout. Latency is measured separately (milestone 4).
 - **A daily limit stops the run:** the remaining runs are skipped and marked as errors, with
   the provider's message, so no quota is spent on runs that can only fail.
@@ -237,13 +236,14 @@ scenario's expectations.
   workflow run "Full eval suite"`), with inputs for runs, concurrency, tags and the judge.
 
 **Repository settings needed:**
-- **Secret `GROQ_API_KEY`.** Without it the smoke job skips with a warning, as for pull
+- **Secret `GEMINI_API_KEY`.** Without it the smoke job skips with a warning, as for pull
   requests from forks.
 - **Optional variables:** `EVAL_SMOKE_RUNS` (1), `EVAL_CONCURRENCY` (1),
   `EVAL_MAX_SUCCESS_DROP` (0.10) and `EVAL_MAX_ERROR_RATE` (0.20).
 
-**Cost.** One smoke run uses about 100k agent tokens. That's half of the free tier's daily
-200K for gpt-oss-120b, so CI on every push needs a paid plan, or few pushes a day.
+**Cost.** One smoke run uses about 100k agent tokens and a few hundred requests, a large
+share of the free tier's daily request cap, so CI on every push needs a paid tier, or few
+pushes a day.
 
 ## Adding scenarios (towards 250)
 

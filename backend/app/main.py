@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.agent.llm import GroqClient, LLMClient
+from app.agent.llm import GeminiClient, LLMClient
 from app.agent.loop import Agent, AgentConfig
 from app.agent.prompts import load_prompts
 from app.agent.ratelimit import TokenRateLimiter
@@ -30,17 +30,17 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def build_llm(settings: Settings) -> GroqClient | None:
-    """The configured Groq client, or None when no key is set."""
-    if settings.groq_api_key is None or not settings.groq_api_key.get_secret_value():
+def build_llm(settings: Settings) -> GeminiClient | None:
+    """The configured Gemini client, or None when no key is set."""
+    if settings.gemini_api_key is None or not settings.gemini_api_key.get_secret_value():
         return None
     limiter = (
         TokenRateLimiter(settings.llm_tokens_per_minute) if settings.llm_tokens_per_minute else None
     )
-    return GroqClient(
-        api_key=settings.groq_api_key.get_secret_value(),
-        model=settings.groq_model,
-        base_url=settings.groq_base_url,
+    return GeminiClient(
+        api_key=settings.gemini_api_key.get_secret_value(),
+        model=settings.gemini_model,
+        base_url=settings.gemini_base_url,
         temperature=settings.llm_temperature,
         timeout_s=settings.llm_request_timeout_s,
         max_completion_tokens=settings.llm_max_completion_tokens,
@@ -69,12 +69,13 @@ def build_agent(
     if llm is None:
         llm = owned = build_llm(settings)
     if llm is None:
-        log.warning("GROQ_API_KEY is not set; /ws/chat will report the agent as unavailable")
+        log.warning("GEMINI_API_KEY is not set; /ws/chat will report the agent as unavailable")
         return None, None
     config = AgentConfig(
         max_iterations=settings.agent_max_iterations,
         turn_timeout_s=settings.agent_turn_timeout_s,
         history_turns=settings.agent_history_turns,
+        prefetch=settings.agent_prefetch,
     )
     retriever, documents = None, None
     if settings.policy_context_mode == "retrieval":

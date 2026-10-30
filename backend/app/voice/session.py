@@ -483,7 +483,13 @@ class VoiceSession:
 
 
 class _Speaker:
-    """Speaks one reply: sentences into a TTS context, audio into the output buffer.
+    """Speaks one reply, a sentence at a time, into the output buffer.
+
+    Each sentence gets its own TTS context, synthesized one after another. Cartesia ends a
+    context about a second after its last audio, and a reply often pauses longer than that
+    (a tool call, "One moment, please" while the model is retried): a context kept open
+    across the pause would take the rest of the reply and say nothing. Synthesis runs faster
+    than playback, so the next sentence is ready before the buffer runs dry.
 
     On a TTS failure: the apology is said once (from the phrase cache, so it works while
     TTS is down), TTS is reconnected once, and the reply so far is spoken again on the new
@@ -494,46 +500,46 @@ class _Speaker:
         self.metrics = metrics
         self.epoch = session.out.epoch
         self.sentences: list[str] = []
-        self._utterance: Utterance | None = None
+        self._queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._current: Utterance | None = None
         self._pump: asyncio.Task | None = None
         self._failed: TtsError | None = None
 
     def _start(self) -> None:
-        self._utterance = self.s._tts.utterance()
+        self._queue = asyncio.Queue()
         self._failed = None
-        self._pump = asyncio.create_task(self._pump_audio(self._utterance))
+        self._pump = asyncio.create_task(self._pump_audio())
 
-    async def _pump_audio(self, utterance: Utterance) -> None:
+    async def _pump_audio(self) -> None:
         try:
-            async for chunk in utterance.audio():
-                if self.metrics.first_audio_ms is None:
-                    self.metrics.first_audio_ms = round(
-                        (time.monotonic() - self.metrics.end_of_speech) * 1000, 1
-                    )
-                    self.s._emit({"type": "first_audio", "ms": self.metrics.first_audio_ms})
-                self.s.out.put(chunk, self.epoch)
+            while (sentence := await self._queue.get()) is not None:
+                self._current = utterance = self.s._tts.utterance()
+                await utterance.say(for_speech(sentence))
+                await utterance.finish()
+                async for chunk in utterance.audio():
+                    if self.metrics.first_audio_ms is None:
+                        self.metrics.first_audio_ms = round(
+                            (time.monotonic() - self.metrics.end_of_speech) * 1000, 1
+                        )
+                        self.s._emit({"type": "first_audio", "ms": self.metrics.first_audio_ms})
+                    self.s.out.put(chunk, self.epoch)
+                self._current = None
         except TtsError as exc:
             self._failed = exc
 
     async def say(self, sentence: str) -> None:
         self.sentences.append(sentence)
-        if self._utterance is None:
+        if self._pump is None:
             self._start()
-        try:
-            if self._failed:
-                raise self._failed
-            await self._utterance.say(for_speech(sentence))
-        except TtsError as exc:
-            await self._recover(exc)
+        if self._failed:
+            await self._recover(self._failed)  # speaks this sentence too
+        else:
+            self._queue.put_nowait(sentence)
 
     async def finish(self) -> None:
-        if self._utterance is None:
+        if self._pump is None:
             return
-        try:
-            await self._utterance.finish()
-        except TtsError as exc:
-            await self._recover(exc)
-            return await self.finish()
+        self._queue.put_nowait(None)
         await self._pump
         if self._failed:
             await self._recover(self._failed)
@@ -544,8 +550,7 @@ class _Speaker:
         self.s._tts_failures += 1
         if self.s._tts_failures > 1:
             raise _VoiceFailure(f"speech synthesis failed twice: {exc}")
-        if self._pump and not self._pump.done():
-            self._pump.cancel()
+        await self._stop()
         self.s.out.clear()  # don't finish half a sentence from the broken stream
         self.epoch = self.s.out.epoch
         await self.s._play_phrase(TTS_TROUBLE)
@@ -559,13 +564,17 @@ class _Speaker:
         self.s._emit({"type": "recovered", "what": "tts"})
         self._start()
         for sentence in self.sentences:  # the reply so far, again
-            await self._utterance.say(for_speech(sentence))
+            self._queue.put_nowait(sentence)
 
-    async def close(self) -> None:
+    async def _stop(self) -> None:
+        if self._current is not None:
+            with contextlib.suppress(Exception):
+                await self._current.cancel()
+            self._current = None
         if self._pump and not self._pump.done():
-            if self._utterance is not None:
-                with contextlib.suppress(Exception):
-                    await self._utterance.cancel()
             self._pump.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._pump
+
+    async def close(self) -> None:
+        await self._stop()
