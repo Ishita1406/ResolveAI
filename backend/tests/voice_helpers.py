@@ -84,7 +84,7 @@ class Driver:
         pcm = pcm.ljust(frame_in, b"\x00")
         self.session.feed(pcm)
         out_bytes = self.session.out.sample_rate * 2 * self.TICK_MS // 1000
-        self.output += self.session.out.read(out_bytes)
+        self.output += self.session.read_audio(out_bytes)
         await asyncio.sleep(self.TICK_MS / 1000 if self.real_time else 0.002)
 
     async def play(self, pcm: bytes) -> None:

@@ -1,0 +1,26 @@
+# The frontend and the backend routes it uses. Bound to localhost: the admin API trusts
+# requests from this machine when ADMIN_TOKEN is unset, and everything here arrives from
+# nginx on this machine. Set ADMIN_TOKEN before exposing this beyond localhost.
+server {
+    listen 127.0.0.1:${FRONTEND_PORT};
+    root /usr/share/nginx/html;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'" always;
+
+    location = /voice/offer { proxy_pass ${BACKEND_URL}; }
+    location /admin/conversations { proxy_pass ${BACKEND_URL}; }
+    location /admin/evals { proxy_pass ${BACKEND_URL}; }
+    location = /health { proxy_pass ${BACKEND_URL}; }
+
+    # Caching via `expires`: an add_header here would drop the headers above for this location.
+    location /assets/ {
+        expires max;  # file names carry a content hash
+        try_files $uri =404;
+    }
+    location / {
+        expires -1;  # index.html: always revalidate, so a new build is picked up
+        try_files $uri /index.html;
+    }
+}

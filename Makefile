@@ -1,4 +1,4 @@
-.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate voice-replay voice-fixtures serve latency latency-db conversation
+.PHONY: up down test lint format migrate seed reseed tool-schemas chat ingest-policies eval-retrieval eval eval-validate eval-smoke eval-adversarial eval-gate voice-replay voice-fixtures serve latency latency-db conversation frontend-install frontend-dev frontend-test
 
 up:
 	docker compose up -d --build
@@ -90,3 +90,15 @@ latency-db:
 # make conversation ID=42 (or ID= to list recent ones). The web view: /admin/replay.
 conversation:
 	cd backend && uv run python -m app.observability.conversation $(if $(ID),$(ID),--list)
+
+# Frontend (frontend/, React + Vite). The dev server proxies the API to BACKEND_URL
+# (default http://127.0.0.1:8000, i.e. `make serve`): open http://127.0.0.1:5173.
+frontend-install:
+	cd frontend && npm ci --no-audit --no-fund
+
+frontend-dev:
+	cd frontend && npm run dev
+
+# Type-check, unit tests and a production build.
+frontend-test:
+	cd frontend && npm run typecheck && npm test && npm run build

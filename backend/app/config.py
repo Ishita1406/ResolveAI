@@ -9,6 +9,7 @@ from sqlalchemy.engine import URL
 # Repo-root .env for local runs; in Docker, compose injects the variables directly.
 ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 POLICY_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs" / "policies"
+EVAL_RESULTS_DIR = Path(__file__).resolve().parents[2] / "evals" / "results"
 
 
 class Settings(BaseSettings):
@@ -128,9 +129,11 @@ class Settings(BaseSettings):
     langfuse_host: str = "https://cloud.langfuse.com"
     # Put model input and output on LLM spans. Off: they hold customer details (PII).
     otel_capture_content: bool = False
-    # /admin/* (conversation replay). Set: requests need "Authorization: Bearer <token>".
-    # Unset: only requests from this machine are served.
+    # /admin/* (conversation replay, eval results). Set: requests need
+    # "Authorization: Bearer <token>". Unset: only requests from this machine are served.
     admin_token: SecretStr | None = None
+    # Eval harness output (evals/results/<run>/results.json), read by the eval dashboard.
+    eval_results_dir: Path = EVAL_RESULTS_DIR
 
     def database_url(self, driver: str = "postgresql+psycopg") -> URL:
         # URL.create (not a string) so passwords with special characters need no escaping,

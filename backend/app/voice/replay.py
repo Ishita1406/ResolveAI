@@ -98,7 +98,7 @@ async def replay(
         pcm = pcm.ljust(in_step, b"\x00")
         customer.extend(pcm)
         session.feed(pcm)
-        agent.extend(session.out.read(out_step))
+        agent.extend(session.read_audio(out_step))
         await asyncio.sleep(TICK_MS / 1000 if real_time else 0.001)
 
     async def wait(condition) -> None:

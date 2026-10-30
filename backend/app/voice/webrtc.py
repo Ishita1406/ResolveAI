@@ -84,7 +84,7 @@ class SessionAudioTrack(MediaStreamTrack):
             wait = self._start + self._timestamp / self.rate - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
-        pcm = self.session.out.read(self.samples * 2)
+        pcm = self.session.read_audio(self.samples * 2)
         frame = av.AudioFrame.from_ndarray(
             np.frombuffer(pcm, dtype="<i2").reshape(1, -1), format="s16", layout="mono"
         )

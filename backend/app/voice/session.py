@@ -241,6 +241,7 @@ class VoiceSession:
         self._stt_lock = asyncio.Lock()
         self._end_task: asyncio.Task | None = None
         self._writes: set[asyncio.Task] = set()  # turn metrics being saved
+        self._agent_audible = False
 
     # --- lifecycle ------------------------------------------------------------------------
 
@@ -291,6 +292,16 @@ class VoiceSession:
         if self.session_id is not None:
             with contextlib.suppress(Exception):
                 await self.agent.end_session(self.session_id)
+
+    def read_audio(self, nbytes: int) -> bytes:
+        """The transport's next frame of agent audio. Says when the agent starts and stops
+        being heard ("agent_audio"), for the caller's speaking indicator."""
+        pcm = self.out.read(nbytes)
+        playing = self.out.playing or any(pcm)
+        if playing != self._agent_audible:
+            self._agent_audible = playing
+            self._emit({"type": "agent_audio", "playing": playing})
+        return pcm
 
     @property
     def busy(self) -> bool:
